@@ -1,0 +1,17 @@
+{
+  "source_dataset_root": "/data/zsq/stack_blocks_bimanual_0513",
+  "source_urdf": "/data/zsq/x5.urdf",
+  "source_summary": "/data/zsq/stack_blocks_bimanual_0513/fk_verify/fk_vs_dataset_base_summary.json",
+  "state_unit": "rad",
+  "offset_mode": "base",
+  "left_offset_xyz": [
+    -0.0951995117336301,
+    -0.001000724923768371,
+    -0.15649883982848967
+  ],
+  "right_offset_xyz": [
+    -0.09519835300344497,
+    -0.000998287048561815,
+    -0.15649921788495624
+  ]
+}

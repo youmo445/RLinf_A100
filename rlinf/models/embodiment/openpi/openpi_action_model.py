@@ -261,7 +261,9 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
 
         # tensor -> numpy
         inputs = jax.tree.map(_to_numpy, inputs)
-        batch_size = next(v.shape[0] for v in inputs.values() if hasattr(v, "shape"))
+        batch_size = next(
+            v.shape[0] for v in jax.tree_util.tree_leaves(inputs) if hasattr(v, "shape")
+        )
         # split & transform
         transformed_samples = []
         for i in range(batch_size):
@@ -280,6 +282,18 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
                 sample["prompt"] = obs["prompt"][i]
             else:
                 sample["prompt"] = "xxxx"
+                if "arxx5" in self.config.config_name and "image" not in sample:
+                    image = {}
+                    for image_key in (
+                        "base_0_rgb",
+                        "left_wrist_0_rgb",
+                        "right_wrist_0_rgb",
+                    ):
+                        flat_key = f"image/{image_key}"
+                        if flat_key in sample:
+                            image[image_key] = sample.pop(flat_key)
+                    if image:
+                        sample["image"] = image
             transformed_sample = self._input_transform(sample)
             transformed_samples.append(transformed_sample)
         # recombine
@@ -462,6 +476,20 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         return result
 
     def obs_processor(self, env_obs):
+        if "arxx5" in self.config.config_name:
+            wrist_images = env_obs["wrist_images"]
+            if wrist_images is None:
+                raise ValueError("ARXX5 OpenPI requires env_obs['wrist_images']")
+            return {
+                "image": {
+                    "base_0_rgb": env_obs["main_images"],
+                    "left_wrist_0_rgb": wrist_images[:, 0],
+                    "right_wrist_0_rgb": wrist_images[:, 1],
+                },
+                "prompt": env_obs["task_descriptions"],
+                "state" : env_obs["states"],
+            }
+
         # base observation
         processed_obs = {
             "observation/image": env_obs["main_images"],
@@ -583,10 +611,15 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             }
             forward_inputs.update(nft_outputs)
 
-        # Clone observations to avoid cross-step reference issues.
-        cloned_obs = copy_dict_tensor(
-            {k: v for k, v in to_process_obs.items() if k != "prompt"}
-        )
+        # Clone observations to avoid cross-step reference issues.  Keep ARXX5
+        # images flat so rollout result sharding can split tensor values.
+        obs_for_forward = {k: v for k, v in to_process_obs.items() if k != "prompt"}
+        if "arxx5" in self.config.config_name and "image" in obs_for_forward:
+            image_obs = obs_for_forward.pop("image")
+            obs_for_forward.update(
+                {f"image/{image_key}": image for image_key, image in image_obs.items()}
+            )
+        cloned_obs = copy_dict_tensor(obs_for_forward)
         forward_inputs.update(cloned_obs)
 
         result = {

@@ -62,8 +62,30 @@ from rlinf.models.embodiment.openpi.dataconfig.robocasa_dataconfig import (
 from rlinf.models.embodiment.openpi.dataconfig.robotwin_aloha_dataconfig import (
     LeRobotAlohaDataConfig,
 )
+from rlinf.models.embodiment.openpi.dataconfig.arxx5_dataconfig import (
+    LeRobotArxX5BimanualDataConfig,
+)
 
 _CONFIGS = [
+    TrainConfig(
+        name="pi05_arxx5",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=32,
+            # discrete_state_input=False,
+        ),
+        data=LeRobotArxX5BimanualDataConfig(
+            repo_id="ningma/stack_blocks_0426",
+            dataset_root="/data/zsq/stack_blocks_bimanual_0513",
+            obs_fields=("state",),
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/data/zsq/openpi/checkpoints/pi05_arxx5/arxx5_h=16_0513/5000/params"),
+        batch_size=160,
+        num_train_steps=30_000,
+        # num_workers=0,
+    ),
     TrainConfig(
         name="pi0_libero",
         model=pi0_config.Pi0Config(),

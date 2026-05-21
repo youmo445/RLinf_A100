@@ -1,0 +1,29 @@
+{
+  "dataset_roots": [
+    "/data/zsq/arx_policy_rollout_new",
+    "/data/zsq/arx_policy_rollout_new_continue"
+  ],
+  "sources": [
+    {
+      "dataset_root": "/data/zsq/arx_policy_rollout_new",
+      "source_episode_start": 0,
+      "source_episode_count": 27,
+      "output_episode_start": 0,
+      "output_episode_end": 27
+    },
+    {
+      "dataset_root": "/data/zsq/arx_policy_rollout_new_continue",
+      "source_episode_start": 0,
+      "source_episode_count": 25,
+      "output_episode_start": 27,
+      "output_episode_end": 52
+    }
+  ],
+  "total_episodes": 52,
+  "store_all_images": false,
+  "view_height": 160,
+  "view_width": 224,
+  "image_key": "image",
+  "action_key": "action",
+  "state_key": "state"
+}

@@ -117,10 +117,39 @@ class RecordVideo(gym.Wrapper):
         """Pick the best image field from an observation dict."""
         if hasattr(self.env, "capture_image"):
             return self.env.capture_image()
+        if "main_images" in obs and obs["main_images"] is not None:
+            if "wrist_images" in obs and obs["wrist_images"] is not None:
+                return self._stack_main_and_wrist_images(
+                    obs["main_images"], obs["wrist_images"]
+                )
+            return obs["main_images"]
         for key in ("main_images", "images", "rgb", "full_image", "main_image"):
             if key in obs and obs[key] is not None:
                 return obs[key]
         return None
+
+    def _stack_main_and_wrist_images(self, main_images: Any, wrist_images: Any):
+        """Stack [main, left_wrist, right_wrist] vertically for video only."""
+        main = self._to_numpy(main_images)
+        wrist = self._to_numpy(wrist_images)
+
+        if main.ndim == 3:
+            main = main[None]
+        if wrist.ndim == 4:
+            wrist = wrist[None]
+
+        if main.ndim != 4 or wrist.ndim != 5 or wrist.shape[1] < 2:
+            return main_images
+
+        if main.shape[1] in (1, 3, 4) and main.shape[-1] not in (1, 3, 4):
+            main = np.transpose(main, (0, 2, 3, 1))
+        if wrist.shape[2] in (1, 3, 4) and wrist.shape[-1] not in (1, 3, 4):
+            wrist = np.transpose(wrist, (0, 1, 3, 4, 2))
+
+        stacked = np.concatenate([main, wrist[:, 0], wrist[:, 1]], axis=1)
+        if stacked.dtype != np.uint8:
+            stacked = stacked.astype(np.uint8)
+        return stacked
 
     def _extract_frame_batches(self, obs: Any) -> list[list[np.ndarray]]:
         """Extract a list of per-step image batches from obs."""

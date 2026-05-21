@@ -1,0 +1,93 @@
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+env:
+  train:
+    seed: 0
+    total_num_envs: 1
+    group_size: 1
+    use_fixed_reset_state_ids: false
+    use_ordered_reset_state_ids: false
+    auto_reset: false
+    ignore_terminations: false
+    use_rel_reward: false
+    max_episode_steps: 8
+    max_steps_per_rollout_epoch: 8
+    reward_coef: 1.0
+
+    wm_env_type: robotwin
+    reset_gripper_open: false
+    enable_offload: false
+    enable_kir: false
+    retain_action: true
+    action_dim: 14
+
+    video_cfg:
+      save_video: false
+      info_on_video: false
+      video_base_dir: /tmp/wanmultiview_arxx5_smoke_video
+
+    initial_image_path: /data/zsq/RLinf/examples/embodiment/config/test_data/wanmultiview_arxx5_stack_blocks
+    dataset_action_key: action
+    dataset_state_key: state
+
+    num_inference_steps: 5
+    chunk: 8
+    condition_frame_length: 1
+    num_frames: 9
+    image_size: [480, 224]
+
+    base_model_path:
+      - /data/zsq/Wan_model/diffusion_pytorch_model-00001-of-00003.safetensors
+      - /data/zsq/Wan_model/diffusion_pytorch_model-00002-of-00003.safetensors
+      - /data/zsq/Wan_model/diffusion_pytorch_model-00003-of-00003.safetensors
+    VAE_path: /data/zsq/Wan_model/Wan2.2_VAE.pth
+    T5_path: /data/zsq/Wan_model/models_t5_umt5-xxl-enc-bf16.pth
+    vace_model_path: /data/zsq/diffsynth-studio-wujie-ppu/outputs/arxx5/epoch-229.safetensors
+    vace_in_dim: 144
+
+    prompt: "机械臂按照要求移动夹爪执行任务"
+    cfg_scale: 1.0
+    tiled: false
+
+    camera_names: [head, left_wrist, right_wrist]
+    camera_axis_mode: identity
+    view_height: 160
+    view_width: 224
+    camera_original_height: 480
+    camera_original_width: 640
+
+    head_left_calib: /data/zsq/outputs/calib_eye_to_hand_head_left/result_eye_to_hand.json
+    head_right_calib: /data/zsq/outputs/calib_eye_to_hand_head_right/result_eye_to_hand.json
+    left_calib: /data/zsq/outputs/calib_eye_in_hand_left/result_eye_in_hand.json
+    right_calib: /data/zsq/outputs/calib_eye_in_hand_right/result_eye_in_hand.json
+
+    left_fk_fn: rlinf.envs.world_model.arxx5_urdf_fk.left_fk
+    right_fk_fn: rlinf.envs.world_model.arxx5_urdf_fk.right_fk
+    fk_urdf_path: /data/zsq/x5.urdf
+    fk_offset_path: /data/zsq/RLinf/rlinf/envs/world_model/arxx5_fk_offsets.json
+    fk_base_link: base_link
+    fk_tip_link: link6
+    fk_offset_mode: base
+    fk_state_unit: rad
+    fk_pose_quat_order: qwxyz
+
+    traj_radius: 40
+    traj_radius_mode: perspective
+    traj_min_radius: 14
+    traj_max_radius: 58
+    traj_ref_depth: 0.30
+    traj_near_depth: 0.19
+    traj_far_depth: 0.69
+    ray_o_vmin: -1.5
+    ray_o_vmax: 1.5
+    ray_d_vmin: -1.0
+    ray_d_vmax: 1.0
+
+    task_suite_name: arxx5_smoke
+    reward_model:
+      type: ResnetRewModel
+      from_pretrained: /data/zsq/stack_blocks_bimanual_0513/reward_model_runs/resnet/best.pth
+      threshold: null  # null means use threshold saved in best.pth
