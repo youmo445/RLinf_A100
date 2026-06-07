@@ -348,8 +348,9 @@ class WanEnv(BaseWorldEnv):
 
             # KIR trick: use the last four frames as condition frames, while
             # keeping the reference frame unchanged as the first frame.
-            target_items = episode_data.get("target_items", [])
-
+            # 暂时不用这个
+            # target_items = episode_data.get("target_items", [])
+            target_items = []
             # first condition frame is the reference frame,
             # so the length of target_items should be condition_frame_length - 1
             if len(target_items) == self.condition_frame_length - 1:

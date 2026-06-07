@@ -22,3 +22,87 @@ PKG-INFO
 *.egg-info/
 .claude/settings.json
 videos/
+# ----------------------------------------------------------------------
+# Local experiment artifacts / Codex backups / generated media
+# Added for A100 local development. Keep source/config files tracked
+# explicitly with `git add <path>`; do not commit generated outputs.
+# ----------------------------------------------------------------------
+
+# Python / test / cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.ipynb_checkpoints/
+
+# Logs / experiment outputs
+logs/
+outputs/
+videos/
+wandb/
+runs/
+lightning_logs/
+tensorboard/
+events.out.tfevents*
+*.log
+
+# Checkpoints / model weights
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.bin
+
+# Datasets / large numeric artifacts
+*.npy
+*.npz
+*.hdf5
+*.h5
+*.parquet
+*.jsonl
+*.pkl
+*.pickle
+
+# Generated videos / images / visual comparison outputs
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.gif
+*.png
+*.jpg
+*.jpeg
+
+# Codex / manual backup files
+*.bak
+*.bak_*
+*.bak_codex*
+*.bak_codex_*
+*.codex_bak*
+*.codex_bak_*
+*.orig
+*.tmp
+bak/
+**/bak/
+
+# Embodiment generated test data and rollout visualizations
+examples/embodiment/config/test_data/
+examples/embodiment/eef_gradio_rollouts/
+examples/embodiment/eef_jitter_rollouts/
+examples/embodiment/pi05_wm_batch_rollouts*/
+examples/embodiment/pi05_wm_rollouts*/
+examples/embodiment/real_vs_wm_threeview_*/
+examples/embodiment/vggt_depth_*/
+examples/embodiment/*rollout*_videos/
+examples/embodiment/*reward_score_plots/
+
+# World model local backup folders
+rlinf/envs/world_model/bak/
+examples/embodiment/bak/
+
+# local downloaded model files
+examples/embodiment/models/

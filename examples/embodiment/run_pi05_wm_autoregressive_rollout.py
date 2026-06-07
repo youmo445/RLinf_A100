@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 
@@ -35,8 +36,8 @@ def parse_args():
         default="wanmultiview_arxx5_grpo_pi05",
         help="Hydra config name, with or without .yaml.",
     )
-    parser.add_argument("--episode-index", type=int, default=0)
-    parser.add_argument("--num-chunks", type=int, default=8)
+    parser.add_argument("--episode-index", type=int, default=1)
+    parser.add_argument("--num-chunks", type=int, default=30)
     parser.add_argument("--fps", type=int, default=15)
     parser.add_argument(
         "--output-dir",
@@ -67,6 +68,24 @@ def parse_args():
         default=None,
         help="Optional comma-separated 14-dim action used as current/condition action after reset.",
     )
+    parser.add_argument(
+        "--kir-initial-frame",
+        type=int,
+        default=None,
+        help="Override yaml KIR start frame. Enables KIR for this rollout.",
+    )
+    parser.add_argument(
+        "--disable-kir",
+        action="store_true",
+        help="Disable KIR even if the yaml enables it.",
+    )
+    parser.add_argument(
+        "--policy-mode",
+        type=str,
+        choices=("eval", "train"),
+        default="eval",
+        help="Use eval for deterministic ODE-style rollout, train for flow-SDE exploration.",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cuda")
     return parser.parse_args()
@@ -81,7 +100,8 @@ def load_cfg(args):
     with open_dict(cfg):
         cfg.env.train.total_num_envs = 1
         cfg.env.train.group_size = 1
-        cfg.env.train.use_fixed_reset_state_ids = True
+        # The standalone script should respect --episode-index exactly.
+        cfg.env.train.use_fixed_reset_state_ids = False
         cfg.env.train.auto_reset = False
         cfg.env.train.video_cfg.save_video = False
         cfg.env.train.seed = args.seed
@@ -89,6 +109,12 @@ def load_cfg(args):
         if override_model_path is not None:
             cfg.actor.model.model_path = override_model_path
             cfg.rollout.model.model_path = override_model_path
+        if args.disable_kir:
+            cfg.env.train.enable_kir = False
+            cfg.env.train.kir_initial_frame = None
+        elif args.kir_initial_frame is not None:
+            cfg.env.train.enable_kir = True
+            cfg.env.train.kir_initial_frame = int(args.kir_initial_frame)
     return cfg
 
 
@@ -266,46 +292,84 @@ def main():
         episode_indices=torch.tensor([args.episode_index], dtype=torch.long)
     )
     obs = unwrap_obs(obs)
+    kir_active = bool(env.enable_kir and env.kir_initial_frame is not None)
+    initial_frame_idx = int(env.kir_initial_frame) if kir_active else 0
+    next_output_frame_idx = initial_frame_idx + 1
+    print(
+        f"reset episode={args.episode_index} kir={kir_active} "
+        f"initial_frame={initial_frame_idx} next_frame={next_output_frame_idx}"
+    )
     if args.initial_action14 is not None:
+        if kir_active:
+            print("warning: --initial-action14 overrides the KIR frame action state")
         set_initial_action(env, parse_action14(args.initial_action14))
 
     policy = make_policy(cfg, args.device, args.policy_full_weights)
 
-    wm_frames = [split_obs_to_full_image(obs)]
+    wm_frames = [tensor_frames_to_uint8(env.current_obs[0, :, 0, -1:, :, :])[0]]
     action_frames = []
     action_history = []
 
     for chunk_idx in range(args.num_chunks):
         obs = unwrap_obs(obs)
         actions, _ = policy.predict_action_batch(
-            obs, mode="eval", compute_values=False
+            obs, mode=args.policy_mode, compute_values=False
         )
         actions = actions.detach().to(env.device, dtype=torch.float32)
-        if actions.shape[1] > env.chunk:
-            actions = actions[:, : env.chunk]
-        elif actions.shape[1] < env.chunk:
+        action_chunk_len = int(actions.shape[1])
+        if action_chunk_len < env.chunk:
             pad = actions[:, -1:, :].repeat(1, env.chunk - actions.shape[1], 1)
             actions = torch.cat([actions, pad], dim=1)
+            action_chunk_len = int(actions.shape[1])
+        if action_chunk_len % env.chunk != 0:
+            raise ValueError(
+                f"Policy action chunk length {action_chunk_len} must be a multiple "
+                f"of world-model chunk {env.chunk}"
+            )
 
-        obs, rewards, terminations, truncations, infos = env.chunk_step(actions)
-        obs = unwrap_obs(obs)
-        action_np = actions[0].detach().cpu().numpy().astype(np.float32)
-        action_history.append(action_np)
+        sub_reward_means = []
+        for start in range(0, action_chunk_len, env.chunk):
+            sub_actions = actions[:, start : start + env.chunk, :]
+            obs, rewards, terminations, truncations, infos = env.chunk_step(sub_actions)
+            obs = unwrap_obs(obs)
+            action_np = sub_actions[0].detach().cpu().numpy().astype(np.float32)
+            action_history.append(action_np)
 
-        chunk_frames = tensor_frames_to_uint8(env.current_obs[0, :, 0, -env.chunk :])
-        wm_frames.extend(list(chunk_frames[: len(action_np)]))
-        for local_idx, action in enumerate(action_np):
-            frame_idx = len(action_frames)
-            action_frames.append(draw_action_frame(action, frame_idx))
+            chunk_frames = tensor_frames_to_uint8(env.current_obs[0, :, 0, -env.chunk :])
+            wm_frames.extend(list(chunk_frames[: len(action_np)]))
+            for local_idx, action in enumerate(action_np):
+                frame_idx = next_output_frame_idx + len(action_frames)
+                action_frames.append(draw_action_frame(action, frame_idx))
 
-        reward_np = rewards.detach().cpu().numpy() if torch.is_tensor(rewards) else rewards
+            reward_np = rewards.detach().cpu().numpy() if torch.is_tensor(rewards) else rewards
+            sub_reward_means.append(float(np.mean(reward_np)))
         print(
             f"chunk {chunk_idx + 1}/{args.num_chunks}: "
-            f"actions={tuple(actions.shape)} reward_mean={float(np.mean(reward_np)):.4f}"
+            f"actions={tuple(actions.shape)} "
+            f"wm_rollouts={action_chunk_len // env.chunk} "
+            f"reward_mean={float(np.mean(sub_reward_means)):.4f}"
         )
 
     save_video(out_dir / "wm_rollout_multiview.mp4", wm_frames, args.fps)
     save_video(out_dir / "action_visualization.mp4", action_frames, args.fps)
+    total_generated_frames = len(wm_frames) - 1
+    metadata = {
+        "config_name": args.config_name,
+        "policy_mode": args.policy_mode,
+        "episode_index": int(args.episode_index),
+        "kir_active": bool(kir_active),
+        "kir_initial_frame": int(env.kir_initial_frame) if kir_active else None,
+        "initial_frame_idx": int(initial_frame_idx),
+        "first_generated_frame_idx": int(next_output_frame_idx),
+        "last_generated_frame_idx": int(next_output_frame_idx + total_generated_frames - 1)
+        if total_generated_frames > 0
+        else None,
+        "num_policy_chunks": int(args.num_chunks),
+        "num_generated_frames": int(total_generated_frames),
+        "wm_chunk": int(env.chunk),
+    }
+    with (out_dir / "rollout_metadata.json").open("w") as f:
+        json.dump(metadata, f, indent=2)
     if action_history:
         all_actions = np.concatenate(action_history, axis=0)
         save_action_axis_plots(out_dir / "action", all_actions)
@@ -313,6 +377,7 @@ def main():
     print(f"saved: {out_dir / 'action_visualization.mp4'}")
     print(f"saved: {out_dir / 'action_left_axes.png'}")
     print(f"saved: {out_dir / 'action_right_axes.png'}")
+    print(f"saved: {out_dir / 'rollout_metadata.json'}")
 
 
 if __name__ == "__main__":

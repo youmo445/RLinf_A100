@@ -258,6 +258,8 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             inputs.pop("prompt")
         else:
             inputs = {key: inputs[key] for key in inputs.keys() if "/" in key}
+            if "arxx5" in self.config.config_name and "state" in obs:
+                inputs["state"] = obs["state"]
 
         # tensor -> numpy
         inputs = jax.tree.map(_to_numpy, inputs)
@@ -667,6 +669,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         if self.use_vlm_value:
             values_vlm = self.get_value_from_vlm(prefix_output)
         if self.config.joint_logprob:
+            # 如果开启joint_logprob，记录整条去噪轨迹的logprob
             initial_log_prob = self.get_logprob_norm(
                 x_t, torch.zeros_like(noise), torch.ones_like(noise)
             )
@@ -679,6 +682,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         if mode == "train":
             if self.config.joint_logprob or collect_nft_state:
                 denoise_inds = torch.arange(num_steps)
+                # 训练的每一步都要计算logprob
             else:
                 if self.config.ignore_last:
                     denoise_inds = torch.tensor(
@@ -689,6 +693,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
                         [random.randint(0, num_steps - 1)] * num_steps
                     )
         else:
+            # 推理时ODE
             denoise_inds = torch.tensor([-1] * num_steps)
         denoise_inds = denoise_inds[None].repeat(bsize, 1)
 
@@ -728,6 +733,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             :, :, : self.config.action_chunk, : self.config.action_env_dim
         ]
         if self.config.joint_logprob:
+            # 为什么用mean不用sum?
             log_probs = log_probs.mean(dim=1)
         else:
             log_probs = log_probs[
@@ -781,6 +787,7 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         # build parameters
         noise_level = self._get_noise_level(device=device, dtype=x_t.dtype)
         timesteps = self._get_timesteps(denoise_steps, device)
+        # 这里是从1到0
         # input parameters
         t_input = timesteps[idx]
         delta = timesteps[idx] - timesteps[idx + 1]

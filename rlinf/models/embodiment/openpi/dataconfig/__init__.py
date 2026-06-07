@@ -16,7 +16,7 @@
 import dataclasses
 import difflib
 from typing import Optional
-
+import openpi.transforms as _transforms
 import openpi.models.pi0_config as pi0_config
 import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
@@ -72,16 +72,49 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(
             pi05=True,
             action_dim=32,
-            action_horizon=32,
+            action_horizon=16,
             # discrete_state_input=False,
         ),
         data=LeRobotArxX5BimanualDataConfig(
-            repo_id="ningma/stack_blocks_0426",
-            dataset_root="/data/zsq/stack_blocks_bimanual_0513",
+            repo_id="ningma/stack_blocks_0520",
+            dataset_root="/data/zsq/stack_blocks_bimanual_0520",
             obs_fields=("state",),
             base_config=DataConfig(prompt_from_task=True),
         ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("/data/zsq/openpi/checkpoints/pi05_arxx5/arxx5_h=16_0513/5000/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/data/zsq/openpi/checkpoints/pi05_arxx5/arxx5_h=16_hasstate_0520/10000/params"),
+        batch_size=160,
+        num_train_steps=30_000,
+        # num_workers=0,
+    ),
+    TrainConfig(
+        name="pi05_robotwin",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=16,
+            # discrete_state_input=False,
+        ),
+        data=LeRobotAlohaDataConfig(
+            repo_id="physical-intelligence/robotwin",
+            adapt_to_pi=False,
+            extra_delta_transform=False, #本来默认用delta_action，改成abs
+            repack_transforms=_transforms.Group(inputs=[
+                _transforms.RepackTransform({
+                    "images": {
+                        "cam_high": "observation.images.cam_high",
+                        "cam_left_wrist": "observation.images.cam_left_wrist",
+                        "cam_right_wrist": "observation.images.cam_right_wrist",
+                    },
+                    "state": "observation.state",
+                    "actions": "action",
+                    "prompt": "prompt",
+                })
+            ]),
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/data/zsq/RoboTwin/policy/pi05/checkpoints/pi05_aloha_full_base/demo_clean/10000/params"),
         batch_size=160,
         num_train_steps=30_000,
         # num_workers=0,

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import types
 from pathlib import Path
 
 import cv2
@@ -15,6 +16,7 @@ from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf, open_dict
 
 from rlinf.envs.world_model.world_model_wan_multi_view_env import WanmultiviewEnv
+from rlinf.models import get_model
 
 
 def parse_args():
@@ -46,7 +48,7 @@ def parse_args():
     parser.add_argument(
         "--dataset-dir",
         type=Path,
-        default=None,
+        default=Path("/data/zsq/RLinf/examples/embodiment/config/test_data/wanmultiview_arxx5_0521_rollout"),
         help="Rollout dataset dir. Defaults to cfg.env.<section>.initial_image_path.",
     )
     parser.add_argument(
@@ -68,6 +70,32 @@ def parse_args():
         default=None,
         help="Override checkpoint threshold. Omit to use threshold stored in ckpt.",
     )
+    parser.add_argument(
+        "--rollout-source",
+        type=str,
+        default="vla",
+        choices=("vla", "dataset"),
+        help="Use PI05 to interact with WM, or replay dataset actions.",
+    )
+    parser.add_argument(
+        "--policy-model-path",
+        type=Path,
+        default=Path("/data/zsq/openpi/checkpoints/pi05_arxx5/arxx5_h=16_hasstate_0520/10000torch"),
+        help="OpenPI/RLinf policy checkpoint root used when --rollout-source=vla.",
+    )
+    parser.add_argument(
+        "--policy-full-weights",
+        type=Path,
+        default=None,
+        help="Optional RLinf full_weights.pt to load after constructing the policy.",
+    )
+    parser.add_argument(
+        "--num-action-chunks",
+        type=int,
+        default=16,
+        help="PI05 action chunk length. Must be a multiple of the WM chunk.",
+    )
+    parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument(
         "--max-steps",
@@ -96,6 +124,23 @@ def load_env_cfg(args):
         env_cfg.reward_model.type = "ResnetRewModel"
         env_cfg.reward_model.from_pretrained = str(args.reward_ckpt)
         env_cfg.reward_model.threshold = args.reward_threshold
+        env_cfg.wm_chunk = 8
+        env_cfg.context_frames = 5
+        env_cfg.wm_num_frames = 13
+
+    with open_dict(full_cfg):
+        if "actor" in full_cfg and "model" in full_cfg.actor:
+            full_cfg.actor.model.model_path = str(args.policy_model_path)
+            full_cfg.actor.model.use_proprio = True
+            full_cfg.actor.model.num_action_chunks = int(args.num_action_chunks)
+            if "openpi" in full_cfg.actor.model:
+                full_cfg.actor.model.openpi.action_chunk = int(args.num_action_chunks)
+        if "rollout" in full_cfg and "model" in full_cfg.rollout:
+            full_cfg.rollout.model.model_path = str(args.policy_model_path)
+            full_cfg.rollout.model.use_proprio = True
+            full_cfg.rollout.model.num_action_chunks = int(args.num_action_chunks)
+            if "openpi" in full_cfg.rollout.model:
+                full_cfg.rollout.model.openpi.action_chunk = int(args.num_action_chunks)
     return env_cfg, full_cfg
 
 
@@ -137,6 +182,58 @@ def load_episode_actions(env: WanmultiviewEnv, episode_index: int) -> np.ndarray
     return actions
 
 
+def unwrap_obs(obs):
+    if isinstance(obs, list):
+        if len(obs) != 1:
+            raise ValueError(f"Expected one env obs, got {len(obs)}")
+        return obs[0]
+    return obs
+
+
+def patch_arxx5_state_obs_processor(policy):
+    original_obs_processor = policy.obs_processor
+
+    def obs_processor(self, env_obs):
+        if "arxx5" not in self.config.config_name:
+            return original_obs_processor(env_obs)
+
+        wrist_images = env_obs["wrist_images"]
+        if wrist_images is None:
+            raise ValueError("ARXX5 OpenPI requires env_obs['wrist_images']")
+        processed_obs = {
+            "image": {
+                "base_0_rgb": env_obs["main_images"],
+                "left_wrist_0_rgb": wrist_images[:, 0],
+                "right_wrist_0_rgb": wrist_images[:, 1],
+            },
+            "prompt": env_obs["task_descriptions"],
+        }
+        if "states" in env_obs and env_obs["states"] is not None:
+            processed_obs["state"] = env_obs["states"]
+        return processed_obs
+
+    policy.obs_processor = types.MethodType(obs_processor, policy)
+
+
+def make_policy(full_cfg, args):
+    policy = get_model(full_cfg.actor.model)
+    if args.policy_full_weights is not None:
+        state = torch.load(args.policy_full_weights, map_location="cpu")
+        if isinstance(state, dict) and "model_state_dict" in state:
+            state = state["model_state_dict"]
+        missing, unexpected = policy.load_state_dict(state, strict=False)
+        print(
+            f"loaded full weights: {args.policy_full_weights}; "
+            f"missing={len(missing)} unexpected={len(unexpected)}"
+        )
+        if unexpected:
+            print(f"unexpected keys sample: {unexpected[:8]}")
+    patch_arxx5_state_obs_processor(policy)
+    policy.to(args.device)
+    policy.eval()
+    return policy
+
+
 @torch.no_grad()
 def main():
     args = parse_args()
@@ -155,57 +252,110 @@ def main():
             f"[0, {len(env.dataset) - 1}]"
         )
 
-    actions = load_episode_actions(env, args.episode_index)
-    rollout_actions = actions[1:]
-    if args.max_steps is not None:
-        rollout_actions = rollout_actions[: args.max_steps]
+    rollout_actions = None
+    if args.rollout_source == "dataset":
+        actions = load_episode_actions(env, args.episode_index)
+        rollout_actions = actions[1:]
+        if args.max_steps is not None:
+            rollout_actions = rollout_actions[: args.max_steps]
+        max_steps = int(len(rollout_actions))
+    else:
+        max_steps = int(args.max_steps or env_cfg.get("max_episode_steps", 256))
+        if args.num_action_chunks % env.chunk != 0:
+            raise ValueError(
+                f"--num-action-chunks ({args.num_action_chunks}) must be a "
+                f"multiple of WM chunk ({env.chunk})"
+            )
 
     with open_dict(env_cfg):
-        env_cfg.max_episode_steps = int(len(rollout_actions))
+        env_cfg.max_episode_steps = max_steps
 
     obs, info = env.reset(episode_indices=np.asarray([args.episode_index]))
-    del obs, info
+    obs = unwrap_obs(obs)
+    del info
+
+    policy = None
+    if args.rollout_source == "vla":
+        if not args.policy_model_path.exists():
+            raise FileNotFoundError(f"Policy checkpoint not found: {args.policy_model_path}")
+        if args.policy_full_weights is not None and not args.policy_full_weights.exists():
+            raise FileNotFoundError(f"Policy full weights not found: {args.policy_full_weights}")
+        policy = make_policy(full_cfg, args)
 
     generated_frames = [
         tensor_frames_to_uint8(env.current_obs[0, :, 0, -1:, :, :])[0]
     ]
     rewards = [0.0]
 
-    num_chunks = int(np.ceil(len(rollout_actions) / env_cfg.chunk))
     print(
-        f"Rolling out episode={args.episode_index}, steps={len(rollout_actions)}, "
-        f"chunks={num_chunks}, chunk={env_cfg.chunk}"
+        f"Rolling out episode={args.episode_index}, source={args.rollout_source}, "
+        f"steps={max_steps}, wm_chunk={env.chunk}"
     )
     print(f"dataset={dataset_dir}")
     print(f"reward_ckpt={args.reward_ckpt}")
     print(f"reward_threshold={env.reward_model.threshold}")
+    if policy is not None:
+        print(f"policy_model_path={args.policy_model_path}")
+        if args.policy_full_weights is not None:
+            print(f"policy_full_weights={args.policy_full_weights}")
 
-    for chunk_idx in range(num_chunks):
-        start = chunk_idx * env_cfg.chunk
-        end = min(start + env_cfg.chunk, len(rollout_actions))
-        chunk = rollout_actions[start:end]
-        valid_len = len(chunk)
-        if valid_len == 0:
-            continue
-        if valid_len < env_cfg.chunk:
-            pad = np.repeat(chunk[-1:], env_cfg.chunk - valid_len, axis=0)
-            chunk = np.concatenate([chunk, pad], axis=0)
+    steps_done = 0
+    policy_chunk_idx = 0
+    while steps_done < max_steps:
+        if args.rollout_source == "dataset":
+            assert rollout_actions is not None
+            chunk_np = rollout_actions[steps_done : steps_done + env.chunk]
+            if len(chunk_np) == 0:
+                break
+            action_chunk = torch.from_numpy(chunk_np[None]).to(
+                env.device, dtype=torch.float32
+            )
+            policy_chunk_idx += 1
+        else:
+            obs = unwrap_obs(obs)
+            action_chunk, _ = policy.predict_action_batch(
+                obs, mode="eval", compute_values=False
+            )
+            action_chunk = action_chunk.detach().to(env.device, dtype=torch.float32)
+            if action_chunk.shape[1] % env.chunk != 0:
+                raise ValueError(
+                    f"PI05 returned action chunk length {action_chunk.shape[1]}, "
+                    f"which is not a multiple of WM chunk {env.chunk}"
+                )
+            policy_chunk_idx += 1
 
-        chunk_tensor = torch.from_numpy(chunk[None]).to(
-            env.device, dtype=torch.float32
-        )
-        _, chunk_rewards, _, _, _ = env.chunk_step(chunk_tensor)
-        chunk_reward_np = chunk_rewards[0, :valid_len].detach().cpu().numpy()
-        chunk_frames = tensor_frames_to_uint8(
-            env.current_obs[0, :, 0, -env_cfg.chunk :, :, :]
-        )[:valid_len]
+        action_len = int(action_chunk.shape[1])
+        for local_start in range(0, action_len, env.chunk):
+            if steps_done >= max_steps:
+                break
 
-        generated_frames.extend(list(chunk_frames))
-        rewards.extend([float(x) for x in chunk_reward_np])
-        print(
-            f"chunk {chunk_idx + 1}/{num_chunks}: "
-            f"frames={valid_len}, rewards={chunk_reward_np.tolist()}"
-        )
+            sub_actions = action_chunk[:, local_start : local_start + env.chunk]
+            valid_len = min(sub_actions.shape[1], max_steps - steps_done)
+            if valid_len == 0:
+                break
+            if valid_len < env.chunk:
+                pad = sub_actions[:, -1:, :].repeat(1, env.chunk - valid_len, 1)
+                sub_actions = torch.cat([sub_actions, pad], dim=1)
+
+            obs, chunk_rewards, terminations, truncations, _ = env.chunk_step(sub_actions)
+            chunk_reward_np = chunk_rewards[0, :valid_len].detach().cpu().numpy()
+            chunk_frames = tensor_frames_to_uint8(
+                env.current_obs[0, :, 0, -env.chunk :, :, :]
+            )[:valid_len]
+
+            generated_frames.extend(list(chunk_frames))
+            rewards.extend([float(x) for x in chunk_reward_np])
+            steps_done += valid_len
+            print(
+                f"policy_chunk={policy_chunk_idx} wm_subchunk={local_start // env.chunk + 1}: "
+                f"frames={valid_len}, steps_done={steps_done}, "
+                f"rewards={chunk_reward_np.tolist()}"
+            )
+
+            done = bool(terminations[0, :valid_len].any() or truncations[0, :valid_len].any())
+            if done:
+                steps_done = max_steps
+                break
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     video_path = (
@@ -230,6 +380,11 @@ def main():
                 "fps": args.fps,
                 "reward_ckpt": str(args.reward_ckpt),
                 "reward_threshold": float(env.reward_model.threshold),
+                "rollout_source": args.rollout_source,
+                "policy_model_path": str(args.policy_model_path) if policy is not None else None,
+                "policy_full_weights": str(args.policy_full_weights)
+                if args.policy_full_weights is not None
+                else None,
                 "rewards": rewards,
             },
             indent=2,

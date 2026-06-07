@@ -141,13 +141,14 @@ class NpyTrajectoryDatasetWrapper(Dataset):
 
         # Load first file to infer data structure
         sample_data = np.load(npy_files[0], allow_pickle=True)
+        # import pdb;pdb.set_trace()
         sample_frame = sample_data[0]
 
         # Determine camera names
         if camera_names is None:
             # Default to 'image' if available, otherwise use first available image key
             if "image" in sample_frame:
-                self.camera_names = ["image"]
+                self.camera_names = ["image"] # 这个是为了兼容之前的数据格式，之前的数据都是用'image'这个key来存储图像的
             else:
                 # Try to find image-like keys
                 image_keys = [
