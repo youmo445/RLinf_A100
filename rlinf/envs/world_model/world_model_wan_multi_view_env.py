@@ -142,6 +142,10 @@ class WanmultiviewEnv(BaseWorldEnv):
 
         #
         self.retain_action = cfg.get("retain_action", True)  # Default True TODO
+        self.latch_success_reward = bool(cfg.get("latch_success_reward", False))
+        self.reward_success_latched = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
         self.enable_kir = cfg.get("enable_kir", True) # TODO
         self.kir_initial_frame = cfg.get("kir_initial_frame", None)
         if self.kir_initial_frame is not None:
@@ -894,12 +898,14 @@ class WanmultiviewEnv(BaseWorldEnv):
             mask = torch.zeros(self.num_envs, dtype=bool, device=self.device)
             mask[env_idx] = True # 指定环境的mask为True
             self.prev_step_reward[mask] = 0.0 # 指定环境的pre_step_reward清零
+            self.reward_success_latched[mask] = False
             if self.record_metrics:
                 self.success_once[mask] = False
                 self.returns[mask] = 0
             # self._elapsed_steps = 0
         else:
             self.prev_step_reward[:] = 0
+            self.reward_success_latched[:] = False
             if self.record_metrics:
                 self.success_once[:] = False
                 self.returns[:] = 0.0
@@ -930,6 +936,22 @@ class WanmultiviewEnv(BaseWorldEnv):
         episode_info["reward"] = episode_info["return"] / episode_info["episode_len"]
         infos["episode"] = episode_info
         return infos
+
+    def _apply_success_reward_latch(self, chunk_rewards):
+        """Make success an absorbing reward state inside and across chunks."""
+        if not self.latch_success_reward:
+            return chunk_rewards
+
+        success_threshold = float(getattr(self.cfg, "success_reward_threshold", 0.9))
+        latched_rewards = torch.empty_like(chunk_rewards)
+        for i in range(chunk_rewards.shape[1]):
+            self.reward_success_latched = self.reward_success_latched | (
+                chunk_rewards[:, i] >= success_threshold
+            )
+            latched_rewards[:, i] = self.reward_success_latched.to(
+                dtype=chunk_rewards.dtype
+            )
+        return latched_rewards
 
     def _calc_step_reward(self, chunk_rewards):
         """Calculate step reward"""
@@ -1693,6 +1715,7 @@ class WanmultiviewEnv(BaseWorldEnv):
             chunk_rewards = self._infer_next_chunk_rewards()
             # import pdb;pdb.set_trace()
             # [B,T]-[1,8],是一个WM chunk的值
+            chunk_rewards = self._apply_success_reward_latch(chunk_rewards)
 
             chunk_rewards_tensors = self._calc_step_reward(chunk_rewards)
             # 目前等价
@@ -1778,6 +1801,7 @@ class WanmultiviewEnv(BaseWorldEnv):
         self.current_action14 = self.current_action14.cpu()
         self.condition_action = self.condition_action.cpu()
         self.prev_step_reward = self.prev_step_reward.cpu()
+        self.reward_success_latched = self.reward_success_latched.cpu()
         self.reset_state_ids = self.reset_state_ids.cpu()
         if self.record_metrics:
             self.success_once = self.success_once.cpu()
@@ -1796,6 +1820,7 @@ class WanmultiviewEnv(BaseWorldEnv):
         self.current_action14 = self.current_action14.to(self.device)
         self.condition_action = self.condition_action.to(self.device)
         self.prev_step_reward = self.prev_step_reward.to(self.device)
+        self.reward_success_latched = self.reward_success_latched.to(self.device)
         self.reset_state_ids = self.reset_state_ids.to(self.device)
         if self.record_metrics:
             self.success_once = self.success_once.to(self.device)
@@ -1814,6 +1839,7 @@ class WanmultiviewEnv(BaseWorldEnv):
             "condition_action": self.condition_action.cpu(),
             "elapsed_steps": self.elapsed_steps,
             "prev_step_reward": self.prev_step_reward.cpu(),
+            "reward_success_latched": self.reward_success_latched.cpu(),
             "_is_start": self._is_start,
             "reset_state_ids": self.reset_state_ids.cpu(),
             "generator_state": self._generator.get_state(),
