@@ -175,6 +175,23 @@ class WanmultiviewEnv(BaseWorldEnv):
         self.ray_d_vmax = float(cfg.get("ray_d_vmax", 1.0))
         self.cfg_scale = float(cfg.get("cfg_scale", 1.0))
         self.tiled = bool(cfg.get("tiled", False))
+        self.vace_in_dim = int(cfg.get("vace_in_dim", 144))
+        default_raymap_mode = "raw_stack4" if self.vace_in_dim == 72 else "image"
+        self.raymap_mode = cfg.get("raymap_mode", default_raymap_mode)
+        if self.raymap_mode not in ("image", "raw_stack4"):
+            raise ValueError(f"Unsupported raymap_mode: {self.raymap_mode}")
+        if self.raymap_mode == "raw_stack4" and self.vace_in_dim != 72:
+            raise ValueError(
+                f"raymap_mode=raw_stack4 expects vace_in_dim=72, got {self.vace_in_dim}"
+            )
+        self.vae_spatial_downsample = int(cfg.get("vae_spatial_downsample", 16))
+        self.vae_temporal_downsample = int(cfg.get("vae_temporal_downsample", 4))
+        default_view_embedding_num_views = (
+            len(self.camera_names) if self.vace_in_dim == 72 else 0
+        )
+        self.vace_view_embedding_num_views = int(
+            cfg.get("vace_view_embedding_num_views", default_view_embedding_num_views)
+        )
 
         if self.is_robotwin_env:
             self.intrinsics = None
@@ -453,7 +470,10 @@ class WanmultiviewEnv(BaseWorldEnv):
             for unit in pipe.units
         ]
 
-        pipe.vace = VaceWan22CodexModel(vace_in_dim=self.cfg.vace_in_dim).to(dtype=pipe.torch_dtype, device=pipe.device)
+        pipe.vace = VaceWan22CodexModel(
+            vace_in_dim=self.vace_in_dim,
+            view_embedding_num_views=self.vace_view_embedding_num_views,
+        ).to(dtype=pipe.torch_dtype, device=pipe.device)
         state_dict = load_state_dict(self.cfg.vace_model_path)
         dit_state, vace_state, unknown_keys = split_dit_vace_state_dict(state_dict)
         if dit_state or vace_state:
@@ -575,6 +595,81 @@ class WanmultiviewEnv(BaseWorldEnv):
             action_seq = action_seq[-self.num_frames :]
         return action_seq
 
+    def _latent_frame_groups(self, num_frames):
+        latent_t = (num_frames - 1) // self.vae_temporal_downsample + 1
+        groups = [[0] * self.vae_temporal_downsample]
+        for i in range(1, latent_t):
+            start = 1 + (i - 1) * self.vae_temporal_downsample
+            groups.append(
+                [
+                    min(start + j, num_frames - 1)
+                    for j in range(self.vae_temporal_downsample)
+                ]
+            )
+        return groups
+
+    def _raw_stack4_latent_intrinsic(self, image_intrinsic, image_height, image_width):
+        if (
+            image_height % self.vae_spatial_downsample != 0
+            or image_width % self.vae_spatial_downsample != 0
+        ):
+            raise ValueError(
+                f"raw_stack4 requires view size divisible by {self.vae_spatial_downsample}, "
+                f"got view_height={image_height}, view_width={image_width}."
+            )
+        latent_h = image_height // self.vae_spatial_downsample
+        latent_w = image_width // self.vae_spatial_downsample
+        latent_intrinsic = image_intrinsic.copy()
+        latent_intrinsic[0, 0] *= latent_w / float(image_width)
+        latent_intrinsic[0, 2] *= latent_w / float(image_width)
+        latent_intrinsic[1, 1] *= latent_h / float(image_height)
+        latent_intrinsic[1, 2] *= latent_h / float(image_height)
+        return latent_intrinsic, latent_h, latent_w
+
+    def _build_raw_stack4_raymap_tensors(self, ray_w2c_by_cam, intrinsic_by_cam, total_frames):
+        groups = self._latent_frame_groups(total_frames)
+        per_cam = {}
+        for cam in self.camera_names:
+            latent_intrinsic, latent_h, latent_w = self._raw_stack4_latent_intrinsic(
+                intrinsic_by_cam[cam],
+                self.view_height,
+                self.view_width,
+            )
+            per_cam[cam] = {
+                "latent_intrinsic": latent_intrinsic,
+                "latent_h": latent_h,
+                "latent_w": latent_w,
+            }
+
+        ray_o_slots = []
+        ray_d_slots = []
+        for group in groups:
+            ray_o_views = []
+            ray_d_views = []
+            for cam in self.camera_names:
+                cam_info = per_cam[cam]
+                ray_o_group = []
+                ray_d_group = []
+                for frame_idx in group:
+                    frame_idx = min(max(int(frame_idx), 0), total_frames - 1)
+                    c2w = np.linalg.inv(ray_w2c_by_cam[cam][frame_idx]).astype(np.float32)
+                    ray_o, ray_d = generate_raymap(
+                        cam_info["latent_intrinsic"],
+                        c2w,
+                        cam_info["latent_h"],
+                        cam_info["latent_w"],
+                    )
+                    ray_o_group.append(ray_o)
+                    ray_d_group.append(ray_d)
+                ray_o_views.append(np.concatenate(ray_o_group, axis=-1))
+                ray_d_views.append(np.concatenate(ray_d_group, axis=-1))
+            ray_o_slots.append(np.concatenate(ray_o_views, axis=0))
+            ray_d_slots.append(np.concatenate(ray_d_views, axis=0))
+
+        ray_o = torch.from_numpy(np.stack(ray_o_slots, axis=0)).permute(3, 0, 1, 2).float()
+        ray_d = torch.from_numpy(np.stack(ray_d_slots, axis=0)).permute(3, 0, 1, 2).float()
+        return ray_o, ray_d
+
     def _build_arxx5_controls(self, action_seq):
         action_seq = self._pad_action_sequence(action_seq)
         ee_pose, state = self._action14_to_ee_pose_and_state(action_seq)
@@ -588,6 +683,7 @@ class WanmultiviewEnv(BaseWorldEnv):
         control_per_cam = {}
         ray_o_per_cam = {}
         ray_d_per_cam = {}
+        raw_intrinsic_by_cam = {}
         for cam in self.camera_names:
             k = scale_intrinsic(
                 self.intrinsics[cam],
@@ -596,6 +692,7 @@ class WanmultiviewEnv(BaseWorldEnv):
                 self.view_height,
                 self.view_width,
             )
+            raw_intrinsic_by_cam[cam] = k
             control_per_cam[cam] = generate_traj_map(
                 traj_actions_by_cam[cam],
                 traj_w2c_by_cam[cam],
@@ -646,6 +743,12 @@ class WanmultiviewEnv(BaseWorldEnv):
                     )
                 )
             )
+        if self.raymap_mode == "raw_stack4":
+            ray_map_o, ray_map_d = self._build_raw_stack4_raymap_tensors(
+                ray_w2c_by_cam,
+                raw_intrinsic_by_cam,
+                action_seq.shape[0],
+            )
         return control_video, ray_map_o, ray_map_d
 
     def _build_robotwin_camera_anchor(self, env_idx, source_path, reference_action14):
@@ -680,6 +783,8 @@ class WanmultiviewEnv(BaseWorldEnv):
         control_per_cam = {}
         ray_o_per_cam = {}
         ray_d_per_cam = {}
+        raw_intrinsic_by_cam = {}
+        raw_w2c_by_cam = {}
         for cam, robotwin_cam in zip(self.camera_names, self.robotwin_camera_names):
             original_h, original_w = anchor.original_hw_by_cam[robotwin_cam]
             k = robotwin_scale_intrinsic(
@@ -690,6 +795,8 @@ class WanmultiviewEnv(BaseWorldEnv):
                 self.view_width,
             )
             w2c_seq = w2c_by_robotwin_cam[robotwin_cam]
+            raw_intrinsic_by_cam[cam] = k
+            raw_w2c_by_cam[cam] = w2c_seq
             control_per_cam[cam] = generate_traj_map(
                 abs_actions,
                 w2c_seq,
@@ -739,6 +846,12 @@ class WanmultiviewEnv(BaseWorldEnv):
                         [ray_d_per_cam[cam][t] for cam in self.camera_names], axis=0
                     )
                 )
+            )
+        if self.raymap_mode == "raw_stack4":
+            ray_map_o, ray_map_d = self._build_raw_stack4_raymap_tensors(
+                raw_w2c_by_cam,
+                raw_intrinsic_by_cam,
+                action_seq.shape[0],
             )
         return control_video, ray_map_o, ray_map_d
 
@@ -793,8 +906,11 @@ class WanmultiviewEnv(BaseWorldEnv):
             self._elapsed_steps = 0
 
     def _record_metrics(self, step_reward, terminations, infos):
+        # step_reward是[B]
+        # terminations是二值[B]
         episode_info = {}
         self.returns += step_reward # [num_envs] 累积奖励
+        # 直接加上了每个VLA-chunk的总奖励
         # Update success_once based on terminations
         if isinstance(terminations, torch.Tensor):
             self.success_once = self.success_once | terminations
@@ -841,7 +957,7 @@ class WanmultiviewEnv(BaseWorldEnv):
 
         # Check if any reward in the chunk exceeds the threshold
         # chunk_rewards shape: [num_envs, chunk]
-        max_reward_in_chunk = chunk_rewards.max(dim=1)[0]  # [num_envs] 每个环境沿时间维度的最大值
+        max_reward_in_chunk = chunk_rewards.max(dim=1)[0]  # [num_envs] 每个环境的chunk步对应的奖励在时间维度的最大值
         success_estimated = max_reward_in_chunk >= success_threshold # [num_envs] 每个环境的最大reward超过阈值则认为成功
 
         return success_estimated.to(self.device)
@@ -1557,7 +1673,7 @@ class WanmultiviewEnv(BaseWorldEnv):
         self.last_control_video_chunks = []
         extracted_obs = None
         num_rollout_chunks = action_chunk_len // self.chunk
-
+        # 这里计算VLA的action_chunk是wm的chunk的几倍
         for chunk_idx in range(num_rollout_chunks):
             start = chunk_idx * self.chunk
             end = start + self.chunk
@@ -1567,15 +1683,19 @@ class WanmultiviewEnv(BaseWorldEnv):
                 self._infer_next_chunk_frames(sub_actions)
 
             # Update elapsed steps after each world-model autoregressive rollout.
-            self.elapsed_steps += self.chunk
+            self.elapsed_steps += self.chunk 
+            # 0/8/16，就是一个数，目前还不能表示组内每条轨迹
 
             # Read the last frame from self.current_obs.
             extracted_obs = self._wrap_obs()
 
             # Get rewards for this generated world-model chunk.
             chunk_rewards = self._infer_next_chunk_rewards()
-            # [B,T]
+            # import pdb;pdb.set_trace()
+            # [B,T]-[1,8],是一个WM chunk的值
+
             chunk_rewards_tensors = self._calc_step_reward(chunk_rewards)
+            # 目前等价
             reward_chunks.append(chunk_rewards_tensors)
 
             # Simple strategy: mark success/truncation at the end of each generated sub-chunk,
@@ -1599,14 +1719,24 @@ class WanmultiviewEnv(BaseWorldEnv):
             truncation_chunks.append(raw_chunk_truncations)
 
         chunk_rewards_tensors = torch.cat(reward_chunks, dim=1)
+        # 这个存每帧的奖励
         raw_chunk_terminations = torch.cat(termination_chunks, dim=1)
+        # 这个可以表示每个WM-chunk是否成功
         raw_chunk_truncations = torch.cat(truncation_chunks, dim=1)
+        # 这个表示每个WM-chunk是否超出最大限制长度
+        # print(f'chunk_rewards_tensors:{chunk_rewards_tensors},raw_chunk_termiations:{raw_chunk_terminations}')
+        '''
+        类似这种
+        chunk_rewards_tensors:tensor([[0., 0., 0., 0., 0., 0., 0., 0.]], device='cuda:0'),raw_chunk_termiations:tensor([[False, False, False, False, False, False, False, False]],
+       device='cuda:0')
+        '''
+        # import pdb;pdb.set_trace()
         # 把每个sub-chunk的奖励、终止、截断结果拼接起来，得到完整的chunk级别的奖励和done信号
         past_terminations = raw_chunk_terminations.any(dim=1)
         past_truncations = raw_chunk_truncations.any(dim=1)
         past_dones = torch.logical_or(past_terminations, past_truncations)
         # 得到每个环境在整个chunk动作执行完后是否已经终止或截断的结果
-
+        # import pdb;pdb.set_trace()
         if past_dones.any() and self.auto_reset:
             extracted_obs, infos = self._handle_auto_reset(
                 past_dones, extracted_obs, {}
@@ -1617,7 +1747,7 @@ class WanmultiviewEnv(BaseWorldEnv):
         infos = self._record_metrics(
             chunk_rewards_tensors.sum(dim=1), past_terminations, infos
         )
-
+        # info存的是每个VLA-chunk的平均奖励/是否成功
         chunk_terminations = raw_chunk_terminations
         chunk_truncations = raw_chunk_truncations
 
@@ -1725,7 +1855,7 @@ if __name__ == "__main__":
         os.environ.get("EMBODIED_CONFIG_DIR", repo_root / "examples/embodiment/config")
     ).resolve()
     config_name = os.environ.get(
-        "EMBODIED_CONFIG_NAME", "wanmultiview_arxx5_grpo_pi05"
+        "EMBODIED_CONFIG_NAME", "wanmultiview_arxx5_newstructure_grpo_pi05"
     )
 
     print(f"Loading config: {config_name} from {config_dir}")

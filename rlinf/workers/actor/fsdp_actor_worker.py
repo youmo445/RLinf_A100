@@ -1001,6 +1001,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         # create weight syncer
         weight_syncer_cfg = OmegaConf.select(cfg, "weight_syncer")
         self.weight_syncer = WeightSyncer.create(weight_syncer_cfg)
+        self._rollout_diagnostic_metrics = {}
 
     def _setup_rollout_weight_dst_ranks(self) -> None:
         """
@@ -1163,6 +1164,8 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             rollout_batch["loss_mask"] = loss_mask
             rollout_batch["loss_mask_sum"] = loss_mask_sum
 
+        pre_filter_loss_mask = rollout_batch.get("loss_mask", None)
+
         # filter data by rewards
         if self.cfg.algorithm.get("filter_rewards", False):
             rewards = rollout_batch[
@@ -1212,7 +1215,257 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             else:
                 rollout_batch["loss_mask"] = reward_filter_mask
 
+        self._rollout_diagnostic_metrics = self._save_rollout_diagnostics(
+            rollout_batch=rollout_batch,
+            pre_filter_loss_mask=pre_filter_loss_mask,
+        )
         return rollout_batch
+
+    def _reshape_action_for_rollout_diagnostics(
+        self, actions: Optional[torch.Tensor]
+    ) -> Optional[torch.Tensor]:
+        if actions is None or not torch.is_tensor(actions):
+            return None
+        if isinstance(actions, DTensor):
+            actions = actions.to_local()
+        if actions.dim() == 4:
+            return actions
+        if actions.dim() != 3:
+            return actions
+
+        chunk = int(self.cfg.actor.model.num_action_chunks)
+        last_dim = actions.shape[-1]
+        if chunk > 0 and last_dim % chunk == 0:
+            return actions.reshape(actions.shape[0], actions.shape[1], chunk, -1)
+        action_dim = int(self.cfg.actor.model.action_dim)
+        if action_dim > 0 and last_dim % action_dim == 0:
+            return actions.reshape(
+                actions.shape[0], actions.shape[1], last_dim // action_dim, action_dim
+            )
+        return actions
+
+    def _rollout_tensor_to_numpy(self, value):
+        if value is None:
+            return None
+        if isinstance(value, DTensor):
+            value = value.to_local()
+        if not torch.is_tensor(value):
+            return np.asarray(value)
+        value = value.detach()
+        if torch.is_floating_point(value):
+            value = value.float()
+        return value.cpu().contiguous().numpy()
+
+    def _action_sequence_metrics(
+        self, name: str, actions: Optional[torch.Tensor]
+    ) -> dict[str, float]:
+        if actions is None or not torch.is_tensor(actions) or actions.dim() != 4:
+            return {}
+
+        actions = actions.detach().float()
+        batch = actions.shape[1]
+        seq = actions.transpose(0, 1).reshape(batch, -1, actions.shape[-1])
+        metrics = {}
+        if seq.shape[1] >= 2:
+            delta = seq[:, 1:] - seq[:, :-1]
+            delta_l2 = torch.linalg.vector_norm(delta, dim=-1)
+            metrics[f"rollout_diag/{name}_delta_l2_mean"] = delta_l2.mean().item()
+            metrics[f"rollout_diag/{name}_delta_l2_max"] = delta_l2.max().item()
+            metrics[f"rollout_diag/{name}_delta_abs_max"] = delta.abs().max().item()
+            metrics[f"rollout_diag/{name}_per_dim_delta_std_mean"] = (
+                delta.reshape(-1, delta.shape[-1]).std(dim=0).mean().item()
+            )
+        if seq.shape[1] >= 3:
+            jerk = seq[:, 2:] - 2 * seq[:, 1:-1] + seq[:, :-2]
+            jerk_l2 = torch.linalg.vector_norm(jerk, dim=-1)
+            metrics[f"rollout_diag/{name}_jerk_l2_mean"] = jerk_l2.mean().item()
+            metrics[f"rollout_diag/{name}_jerk_l2_max"] = jerk_l2.max().item()
+            metrics[f"rollout_diag/{name}_jerk_abs_max"] = jerk.abs().max().item()
+        metrics[f"rollout_diag/{name}_abs_max"] = seq.abs().max().item()
+        return metrics
+
+    def _save_rollout_diagnostics(
+        self,
+        rollout_batch: dict[str, torch.Tensor],
+        pre_filter_loss_mask: Optional[torch.Tensor] = None,
+    ) -> dict[str, float]:
+        enabled = bool(self.cfg.runner.get("save_rollout_diagnostics", True))
+        interval = int(self.cfg.runner.get("save_rollout_diagnostics_interval", 1))
+        global_step = int(getattr(self, "version", 0))
+        if not enabled or interval <= 0 or global_step % interval != 0:
+            return {}
+
+        try:
+            rewards = rollout_batch["rewards"].detach().float()
+            dones = rollout_batch["dones"].detach()
+            loss_mask = rollout_batch.get("loss_mask", None)
+            reward_mask = pre_filter_loss_mask if pre_filter_loss_mask is not None else loss_mask
+            if reward_mask is not None:
+                reward_mask_bool = reward_mask.bool()
+                if reward_mask_bool.shape[-1] == 1 and rewards.shape[-1] != 1:
+                    reward_mask_bool = reward_mask_bool.expand_as(rewards)
+                masked_rewards = rewards * reward_mask_bool.to(rewards.dtype)
+            else:
+                reward_mask_bool = None
+                masked_rewards = rewards
+
+            group_size = int(self.cfg.algorithm.get("group_size", 1))
+            batch_size = int(rewards.shape[1])
+            usable_batch_size = (batch_size // group_size) * group_size
+            success_threshold = float(
+                self.cfg.env.train.get("success_reward_threshold", 0.9)
+            )
+
+            trajectory_scores = masked_rewards.sum(dim=(0, 2))
+            step_success = rewards >= success_threshold
+            if reward_mask_bool is not None:
+                step_success = step_success & reward_mask_bool
+            trajectory_success = step_success.any(dim=(0, 2))
+
+            metrics = {}
+            arrays = {
+                "rewards": self._rollout_tensor_to_numpy(rewards),
+                "dones": self._rollout_tensor_to_numpy(dones),
+                "trajectory_scores": self._rollout_tensor_to_numpy(
+                    trajectory_scores
+                ),
+                "trajectory_success": self._rollout_tensor_to_numpy(
+                    trajectory_success
+                ),
+                "success_threshold": np.asarray(success_threshold, dtype=np.float32),
+                "global_step": np.asarray(global_step, dtype=np.int64),
+                "actor_rank": np.asarray(int(self._rank), dtype=np.int64),
+                "actor_world_size": np.asarray(int(self._world_size), dtype=np.int64),
+            }
+
+            if pre_filter_loss_mask is not None:
+                arrays["pre_filter_loss_mask"] = self._rollout_tensor_to_numpy(
+                    pre_filter_loss_mask
+                )
+            if loss_mask is not None:
+                arrays["loss_mask"] = self._rollout_tensor_to_numpy(loss_mask)
+            if rollout_batch.get("loss_mask_sum", None) is not None:
+                arrays["loss_mask_sum"] = self._rollout_tensor_to_numpy(
+                    rollout_batch["loss_mask_sum"]
+                )
+
+            if usable_batch_size > 0:
+                group_scores = trajectory_scores[:usable_batch_size].reshape(
+                    -1, group_size
+                )
+                group_success = trajectory_success[:usable_batch_size].reshape(
+                    -1, group_size
+                )
+                group_success_counts = group_success.sum(dim=1)
+                group_all_fail = group_success_counts == 0
+                group_all_success = group_success_counts == group_size
+                group_mixed = (~group_all_fail) & (~group_all_success)
+
+                metrics.update(
+                    {
+                        "rollout_diag/group_score_mean": group_scores.mean().item(),
+                        "rollout_diag/group_score_std_mean": group_scores.std(
+                            dim=1, unbiased=False
+                        ).mean().item(),
+                        "rollout_diag/group_score_min": group_scores.min().item(),
+                        "rollout_diag/group_score_max": group_scores.max().item(),
+                        "rollout_diag/group_all_fail_frac": group_all_fail.float()
+                        .mean()
+                        .item(),
+                        "rollout_diag/group_all_success_frac": group_all_success.float()
+                        .mean()
+                        .item(),
+                        "rollout_diag/group_mixed_frac": group_mixed.float()
+                        .mean()
+                        .item(),
+                        "rollout_diag/group_success_count_mean": group_success_counts.float()
+                        .mean()
+                        .item(),
+                        "rollout_diag/trajectory_success_frac": trajectory_success[
+                            :usable_batch_size
+                        ]
+                        .float()
+                        .mean()
+                        .item(),
+                    }
+                )
+                arrays["group_scores"] = self._rollout_tensor_to_numpy(group_scores)
+                arrays["group_success"] = self._rollout_tensor_to_numpy(group_success)
+                arrays["group_success_counts"] = self._rollout_tensor_to_numpy(
+                    group_success_counts
+                )
+                arrays["group_all_fail"] = self._rollout_tensor_to_numpy(
+                    group_all_fail
+                )
+                arrays["group_all_success"] = self._rollout_tensor_to_numpy(
+                    group_all_success
+                )
+                arrays["group_mixed"] = self._rollout_tensor_to_numpy(group_mixed)
+
+                if loss_mask is not None and pre_filter_loss_mask is not None:
+                    kept = loss_mask.bool().any(dim=(0, 2))[
+                        :usable_batch_size
+                    ].reshape(-1, group_size)
+                    kept_group = kept.any(dim=1)
+                    metrics["rollout_diag/effective_group_frac_after_filter"] = (
+                        kept_group.float().mean().item()
+                    )
+
+            forward_inputs = rollout_batch.get("forward_inputs", {})
+            if isinstance(forward_inputs, dict):
+                executed_actions = self._reshape_action_for_rollout_diagnostics(
+                    forward_inputs.get("action", None)
+                )
+                raw_model_actions = self._reshape_action_for_rollout_diagnostics(
+                    forward_inputs.get("model_action", None)
+                )
+                if executed_actions is not None:
+                    arrays["executed_actions"] = self._rollout_tensor_to_numpy(
+                        executed_actions
+                    )
+                    metrics.update(
+                        self._action_sequence_metrics("executed_action", executed_actions)
+                    )
+                if raw_model_actions is not None:
+                    arrays["raw_model_actions"] = self._rollout_tensor_to_numpy(
+                        raw_model_actions
+                    )
+                    metrics.update(
+                        self._action_sequence_metrics("raw_model_action", raw_model_actions)
+                    )
+                for key in ("denoise_inds", "model_action", "action"):
+                    if key in forward_inputs:
+                        arrays[f"forward_inputs_{key}"] = self._rollout_tensor_to_numpy(
+                            forward_inputs[key]
+                        )
+
+            for key in ("prev_logprobs", "prev_values"):
+                if key in rollout_batch:
+                    arrays[key] = self._rollout_tensor_to_numpy(rollout_batch[key])
+
+            log_path = str(self.cfg.runner.logger.get("log_path", "logs"))
+            experiment_name = str(
+                self.cfg.runner.logger.get("experiment_name", "default")
+            )
+            out_dir = os.path.join(
+                log_path,
+                experiment_name,
+                "rollout_diagnostics",
+                f"global_step_{global_step:06d}",
+            )
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = os.path.join(out_dir, f"rank_{int(self._rank):03d}.npz")
+            tmp_path = out_path + ".tmp"
+            with open(tmp_path, "wb") as f:
+                np.savez_compressed(f, **arrays)
+            os.replace(tmp_path, out_path)
+            metrics["rollout_diag/saved"] = 1.0
+            return metrics
+        except Exception as exc:
+            self.logger.warning(
+                f"Failed to save rollout diagnostics at step {global_step}: {exc}"
+            )
+            return {"rollout_diag/saved": 0.0}
 
     def compute_advantages_and_returns(self) -> dict[str, torch.Tensor]:
         """
@@ -1241,6 +1494,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             self.rollout_batch.update({"loss_mask_sum": kwargs["loss_mask_sum"]})
 
         rollout_metrics = compute_rollout_metrics(self.rollout_batch)
+        rollout_metrics.update(self._rollout_diagnostic_metrics)
         return rollout_metrics
 
     def _build_sft_data_loader(self):
