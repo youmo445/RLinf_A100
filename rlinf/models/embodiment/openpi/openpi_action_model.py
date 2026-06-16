@@ -45,6 +45,7 @@ class OpenPi0Config(Pi0Config):
     noise_method: str = "flow_sde"  # flow_ode, flow_sde, flow_noise, flow_cps
     # noise config for flow-sde
     noise_level: float = 0.5
+    sde_chunkwise_noise: bool = False
     noise_anneal: bool = False
     noise_params: list = field(
         default_factory=lambda: [0.7, 0.3, 400]
@@ -391,6 +392,16 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
             "observation": observation,
             "actions": actions.to(torch.float32).to(device),
         }
+
+    def sample_sde_noise(self, shape, device):
+        if (
+            getattr(self.config, "sde_chunkwise_noise", False)
+            and len(shape) == 3
+            and shape[1] > 1
+        ):
+            noise = self.sample_noise((shape[0], 1, shape[2]), device)
+            return noise.expand(shape)
+        return self.sample_noise(shape, device)
 
     def default_forward(
         self,

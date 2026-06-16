@@ -28,6 +28,7 @@ openpi:
   train_expert_only: True
   action_env_dim: ${actor.model.action_dim}
   noise_method: "flow_sde"
+  sde_chunkwise_noise: False
   add_value_head: ${actor.model.add_value_head}
   value_after_vlm: False
   value_vlm_mode: "mean_token"
