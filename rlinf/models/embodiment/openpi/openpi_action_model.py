@@ -730,7 +730,12 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
                 compute_values,
             )
             # Euler step - use new tensor assignment instead of in-place operation
-            x_t = x_t_mean + self.sample_noise(x_t.shape, device) * x_t_std
+            if sample_method == "flow_sde":
+                step_noise = self.sample_sde_noise(x_t.shape, device)
+            else:
+                step_noise = self.sample_noise(x_t.shape, device)
+            x_t = x_t_mean + step_noise * x_t_std
+            # x_t = x_t_mean + self.sample_noise(x_t.shape, device) * x_t_std
             self._update_nft_state(nft_state, idx, x_t_prev, v_t, x_t, sample_method)
             log_prob = self.get_logprob_norm(x_t, x_t_mean, x_t_std)
             # store
