@@ -137,6 +137,21 @@ class WanmultiviewEnv(BaseWorldEnv):
         assert self.num_frames == self.condition_frame_length + self.chunk, (
             "num_frames must be equal to condition_frame_length + action_chunk_length"
         )
+        self.rollout_context_mode = self._normalize_rollout_context_mode(
+            cfg.get("rollout_context_mode", "dense_history")
+        )
+        self.rollout_sparse_history_stride = int(
+            cfg.get("rollout_sparse_history_stride", cfg.get("sparse_history_stride", 4))
+        )
+        if self.rollout_sparse_history_stride <= 0:
+            raise ValueError(
+                f"rollout_sparse_history_stride must be positive, got {self.rollout_sparse_history_stride}"
+            )
+        if (
+            self.rollout_context_mode == "sparse_history"
+            and self.condition_frame_length != 5
+        ):
+            raise ValueError("sparse_history rollout expects condition_frame_length=5")
 
         self.image_size = tuple(cfg.image_size)
 
@@ -274,6 +289,8 @@ class WanmultiviewEnv(BaseWorldEnv):
         self.image_queue = [
             [None] * self.condition_frame_length for _ in range(self.num_envs)
         ]
+        self.frame_history = [[] for _ in range(self.num_envs)]
+        self.action_history14 = [[] for _ in range(self.num_envs)]
 
         # Condition action to generate video,
         # keep length of condition_frame_length
@@ -297,6 +314,68 @@ class WanmultiviewEnv(BaseWorldEnv):
         )
 
         self._is_offloaded = False
+
+    def _normalize_rollout_context_mode(self, mode):
+        mode = str(mode)
+        aliases = {
+            "contiguous": "dense_history",
+            "fixed_sparse_history": "sparse_history",
+        }
+        mode = aliases.get(mode, mode)
+        if mode not in {"dense_history", "sparse_history"}:
+            raise ValueError(
+                f"Unsupported rollout_context_mode={mode}. "
+                "Expected dense_history or sparse_history."
+            )
+        return mode
+
+    def _sparse_history_ids(self, env_idx):
+        history_len = len(self.frame_history[env_idx])
+        if history_len <= 0:
+            raise ValueError(f"Sparse frame history for env {env_idx} is empty")
+        last_idx = history_len - 1
+        stride = self.rollout_sparse_history_stride
+        return [
+            0,
+            max(0, last_idx - 3 * stride),
+            max(0, last_idx - 2 * stride),
+            max(0, last_idx - stride),
+            last_idx,
+        ]
+
+    def _sparse_history_context(self, env_idx):
+        frame_history = self.frame_history[env_idx]
+        action_history = self.action_history14[env_idx]
+        if not action_history:
+            reference_action = self.reference_action14[env_idx].detach().cpu().numpy()
+            action_history = [reference_action.astype(np.float32)]
+            self.action_history14[env_idx] = action_history
+
+        ids = self._sparse_history_ids(env_idx)
+        context_frames = [
+            frame_history[min(idx, len(frame_history) - 1)].clone() for idx in ids
+        ]
+        context_actions = [
+            np.asarray(action_history[min(idx, len(action_history) - 1)], dtype=np.float32).reshape(14)
+            for idx in ids
+        ]
+        return context_frames, np.stack(context_actions, axis=0)
+
+    def _append_sparse_history(self, env_idx, pred_video, actions_tensor):
+        if not self.frame_history[env_idx]:
+            reference_frame = self.reference_frames[env_idx]
+            if reference_frame is None:
+                raise ValueError(f"Missing reference frame for env {env_idx}")
+            self.frame_history[env_idx] = [reference_frame.clone()]
+
+        for t in range(pred_video.shape[1]):
+            self.frame_history[env_idx].append(pred_video[:, t : t + 1].detach().clone())
+
+        actions_np = actions_tensor.detach().cpu().numpy()
+        for t in range(min(actions_np.shape[0], pred_video.shape[1])):
+            self.action_history14[env_idx].append(
+                np.asarray(actions_np[t], dtype=np.float32).reshape(14).copy()
+            )
 
     def _build_dataset(self, cfg):
         return NpyTrajectoryDatasetWrapper(
@@ -1277,15 +1356,36 @@ class WanmultiviewEnv(BaseWorldEnv):
         for env_idx in range(num_envs):
             reference_frame = self.current_obs[env_idx, :, 0, 0:1, :, :].clone()
             self.reference_frames[env_idx] = reference_frame
+            context_action_np = (
+                condition_actions[env_idx].detach().cpu().numpy().astype(np.float32)
+            )
             if kir_context_enabled[env_idx]:
                 context_frames = self.current_obs[env_idx, :, 0, :, :, :].clone()
                 self.image_queue[env_idx] = [
                     context_frames[:, t : t + 1].clone()
                     for t in range(self.condition_frame_length)
                 ]
+                self.frame_history[env_idx] = [
+                    context_frames[:, t : t + 1].clone()
+                    for t in range(self.condition_frame_length)
+                ]
+                self.action_history14[env_idx] = [
+                    context_action_np[t].reshape(14).copy()
+                    for t in range(self.condition_frame_length)
+                ]
             else:
                 self.image_queue[env_idx] = [
                     reference_frame.clone() for _ in range(self.condition_frame_length)
+                ]
+                self.frame_history[env_idx] = [reference_frame.clone()]
+                self.action_history14[env_idx] = [
+                    self.reference_action14[env_idx]
+                    .detach()
+                    .cpu()
+                    .numpy()
+                    .astype(np.float32)
+                    .reshape(14)
+                    .copy()
                 ]
                 self.current_obs[env_idx, :, 0, :, :, :] = reference_frame.repeat(
                     1, self.condition_frame_length, 1, 1
@@ -1410,7 +1510,10 @@ class WanmultiviewEnv(BaseWorldEnv):
         target_size = (self.view_width, self.view_height * len(self.camera_names))
 
         for env_idx in range(num_envs):
-            context_frames = self.image_queue[env_idx]
+            if self.rollout_context_mode == "sparse_history":
+                context_frames, context_action_seq = self._sparse_history_context(env_idx)
+            else:
+                context_frames = self.image_queue[env_idx]
             # self.image_queue存首帧锚定的5帧上下文，如果没有就用当前obs的最后一帧复制填充
             if not context_frames or context_frames[0] is None:
                 raise ValueError(f"Image queue for env {env_idx} is empty or uninitialized")
@@ -1428,7 +1531,16 @@ class WanmultiviewEnv(BaseWorldEnv):
                 raise ValueError("context不足5")
                 input_video.insert(0, input_video[0])
 
-            action_seq = action_window[env_idx].detach().cpu().numpy()
+            if self.rollout_context_mode == "sparse_history":
+                action_seq = np.concatenate(
+                    [
+                        context_action_seq,
+                        actions_tensor[env_idx].detach().cpu().numpy(),
+                    ],
+                    axis=0,
+                )
+            else:
+                action_seq = action_window[env_idx].detach().cpu().numpy()
             action_seq = self._pad_action_sequence(action_seq)
             if self.is_robotwin_env:
                 control_video, ray_map_o, ray_map_d = self._build_robotwin_controls(
@@ -1484,38 +1596,48 @@ class WanmultiviewEnv(BaseWorldEnv):
                 raise NotImplementedError("没有锚定帧")
                 reference_frame = self.current_obs[env_idx, :, 0, 0:1, :, :].detach().cpu()
                 self.reference_frames[env_idx] = reference_frame
-            recent_count = max(0, self.condition_frame_length - 1) # 除去reference frame后还需要的context帧数
-            recent_start = max(0, pred_video.shape[1] - recent_count) # 从生成视频中取出最近的recent_count帧，如果生成的视频不足，就用reference frame填充
-            recent_frames = [
-                pred_video[:, t : t + 1] for t in range(recent_start, pred_video.shape[1])
-            ]
-            while len(recent_frames) < recent_count:
-                raise ValueError(f"生成的视频帧数 {pred_video.shape[1]} 不足以提供 {recent_count} 帧的context")
-                recent_frames.insert(0, reference_frame.clone())
-            self.image_queue[env_idx] = [
-                reference_frame.clone(),
-                *recent_frames[-recent_count:],
-            ][: self.condition_frame_length]
 
             all_samples.append(pred_video[:, -self.chunk :])
             self.current_action14[env_idx] = torch.from_numpy(action_seq[-1]).to(
                 device=self.current_action14.device, dtype=self.current_action14.dtype
             )
-            recent_actions = torch.from_numpy(
-                action_seq[-max(1, self.condition_frame_length - 1) :]
-            ).to(device=self.device, dtype=actions_tensor.dtype)
-            if self.condition_frame_length > 1:
-                self.condition_action[env_idx] = torch.cat(
-                    [
-                        self.reference_action14[env_idx : env_idx + 1].to(
-                            device=self.device, dtype=actions_tensor.dtype
-                        ),
-                        recent_actions[-(self.condition_frame_length - 1) :],
-                    ],
-                    dim=0,
+            if self.rollout_context_mode == "sparse_history":
+                self._append_sparse_history(
+                    env_idx, pred_video[:, -self.chunk :], actions_tensor[env_idx]
+                )
+                sparse_frames, sparse_actions = self._sparse_history_context(env_idx)
+                self.image_queue[env_idx] = sparse_frames
+                self.condition_action[env_idx] = torch.from_numpy(sparse_actions).to(
+                    device=self.device, dtype=actions_tensor.dtype
                 )
             else:
-                self.condition_action[env_idx] = self.current_action14[env_idx : env_idx + 1]
+                recent_count = max(0, self.condition_frame_length - 1) # 除去reference frame后还需要的context帧数
+                recent_start = max(0, pred_video.shape[1] - recent_count) # 从生成视频中取出最近的recent_count帧，如果生成的视频不足，就用reference frame填充
+                recent_frames = [
+                    pred_video[:, t : t + 1] for t in range(recent_start, pred_video.shape[1])
+                ]
+                while len(recent_frames) < recent_count:
+                    raise ValueError(f"生成的视频帧数 {pred_video.shape[1]} 不足以提供 {recent_count} 帧的context")
+                    recent_frames.insert(0, reference_frame.clone())
+                self.image_queue[env_idx] = [
+                    reference_frame.clone(),
+                    *recent_frames[-recent_count:],
+                ][: self.condition_frame_length]
+                recent_actions = torch.from_numpy(
+                    action_seq[-max(1, self.condition_frame_length - 1) :]
+                ).to(device=self.device, dtype=actions_tensor.dtype)
+                if self.condition_frame_length > 1:
+                    self.condition_action[env_idx] = torch.cat(
+                        [
+                            self.reference_action14[env_idx : env_idx + 1].to(
+                                device=self.device, dtype=actions_tensor.dtype
+                            ),
+                            recent_actions[-(self.condition_frame_length - 1) :],
+                        ],
+                        dim=0,
+                    )
+                else:
+                    self.condition_action[env_idx] = self.current_action14[env_idx : env_idx + 1]
 
         # Stack all environments: [num_envs, C, T, H, W]
         x_samples = torch.stack(all_samples, dim=0).to(self.device)
@@ -1857,7 +1979,7 @@ class WanmultiviewEnv(BaseWorldEnv):
         return buffer.getvalue()
 
 
-# export PYTHONPATH=/data/zsq/diffsynth-studio-wujie-ppu:/data/zsq/RLinf:$PYTHONPATH python -m rlinf.envs.world_model.world_model_wan_multi_view_env
+# export PYTHONPATH=/data/zsq/diffsynth-studio-wujie-ppu:/data/zsq/RLinf_A100:$PYTHONPATH python -m rlinf.envs.world_model.world_model_wan_multi_view_env
 if __name__ == "__main__":
     import json
     from pathlib import Path
@@ -1881,7 +2003,7 @@ if __name__ == "__main__":
         os.environ.get("EMBODIED_CONFIG_DIR", repo_root / "examples/embodiment/config")
     ).resolve()
     config_name = os.environ.get(
-        "EMBODIED_CONFIG_NAME", "wanmultiview_arxx5_newstructure_grpo_pi05"
+        "EMBODIED_CONFIG_NAME", "wanmultiview_robotwin_dual_task_new_structure_grpo_pi05"
     )
 
     print(f"Loading config: {config_name} from {config_dir}")
@@ -1889,14 +2011,14 @@ if __name__ == "__main__":
         cfg_ = compose(config_name=config_name)
         cfg = cfg_["env"]["train"]
 
-    rollout_episode_index = int(os.environ.get("WM_ROLLOUT_EPISODE_INDEX", "0"))
+    rollout_episode_index = int(os.environ.get("WM_ROLLOUT_EPISODE_INDEX", "150"))
     rollout_dataset_dir = Path(
         os.environ.get("WM_ROLLOUT_DATASET_DIR", cfg.initial_image_path)
     )
     rollout_output_dir = Path(
         os.environ.get(
             "WM_ROLLOUT_OUTPUT_DIR",
-            "/data/zsq/RLinf/outputs/wanmultiview_rollout",
+            "/data/zsq/RLinf_A100/outputs/wanmultiview_rollout",
         )
     )
     rollout_fps = int(os.environ.get("WM_ROLLOUT_FPS", "30"))
