@@ -37,6 +37,20 @@ def _to_numpy(x):
     return np.asarray(x.detach().cpu()) if torch.is_tensor(x) else x
 
 
+_ACWM_ALOHA_CONFIG_NAMES = frozenset(
+    {
+        "pi05_arxx5_newcam_0719",
+        "pi05_arxx5_packphone_0723",
+        "pi05_arxx5_packphone_400_continue_25000",
+        "pi05_arxx5_packphone_0809_whole_task",
+    }
+)
+_ROBOTWIN_HEAD_ONLY_CONFIG_NAMES = frozenset({"pi05_robotwin_head_only_no_state"})
+_NESTED_ALOHA_CONFIG_NAMES = (
+    _ACWM_ALOHA_CONFIG_NAMES | _ROBOTWIN_HEAD_ONLY_CONFIG_NAMES
+)
+
+
 @dataclass(frozen=True)
 class OpenPi0Config(Pi0Config):
     # config for rl
@@ -93,6 +107,15 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
     """
 
     config: OpenPi0Config
+
+    def _uses_acwm_aloha_io(self) -> bool:
+        return self.config.config_name in _ACWM_ALOHA_CONFIG_NAMES
+
+    def _uses_robotwin_head_only_io(self) -> bool:
+        return self.config.config_name in _ROBOTWIN_HEAD_ONLY_CONFIG_NAMES
+
+    def _uses_nested_aloha_io(self) -> bool:
+        return self.config.config_name in _NESTED_ALOHA_CONFIG_NAMES
 
     @property
     def _no_split_modules(self) -> list[str]:
@@ -285,7 +308,19 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
                 sample["prompt"] = obs["prompt"][i]
             else:
                 sample["prompt"] = "xxxx"
-                if "arxx5" in self.config.config_name and "image" not in sample:
+                if self._uses_nested_aloha_io() and "images" not in sample:
+                    images = {}
+                    for image_key in (
+                        "cam_high",
+                        "cam_left_wrist",
+                        "cam_right_wrist",
+                    ):
+                        flat_key = f"images/{image_key}"
+                        if flat_key in sample:
+                            images[image_key] = sample.pop(flat_key)
+                    if images:
+                        sample["images"] = images
+                elif "arxx5" in self.config.config_name and "image" not in sample:
                     image = {}
                     for image_key in (
                         "base_0_rgb",
@@ -489,6 +524,46 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         return result
 
     def obs_processor(self, env_obs):
+        def to_channel_first(images):
+            if images.ndim != 4:
+                raise ValueError(
+                    "Aloha OpenPI images must be rank 4, got "
+                    f"shape={tuple(images.shape)}"
+                )
+            if images.shape[1] == 3:
+                return images
+            if images.shape[-1] != 3:
+                raise ValueError(
+                    "Aloha OpenPI images must be BCHW or BHWC RGB, got "
+                    f"shape={tuple(images.shape)}"
+                )
+            if torch.is_tensor(images):
+                return images.permute(0, 3, 1, 2).contiguous()
+            return np.moveaxis(images, -1, 1)
+
+        if self._uses_robotwin_head_only_io():
+            return {
+                "images": {
+                    "cam_high": to_channel_first(env_obs["main_images"]),
+                },
+                "prompt": env_obs["task_descriptions"],
+            }
+
+        if self._uses_acwm_aloha_io():
+            wrist_images = env_obs["wrist_images"]
+            if wrist_images is None:
+                raise ValueError("ACWM OpenPI requires env_obs['wrist_images']")
+
+            return {
+                "images": {
+                    "cam_high": to_channel_first(env_obs["main_images"]),
+                    "cam_left_wrist": to_channel_first(wrist_images[:, 0]),
+                    "cam_right_wrist": to_channel_first(wrist_images[:, 1]),
+                },
+                "prompt": env_obs["task_descriptions"],
+                "state": env_obs["states"],
+            }
+
         if "arxx5" in self.config.config_name:
             wrist_images = env_obs["wrist_images"]
             if wrist_images is None:
@@ -627,7 +702,15 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
         # Clone observations to avoid cross-step reference issues.  Keep ARXX5
         # images flat so rollout result sharding can split tensor values.
         obs_for_forward = {k: v for k, v in to_process_obs.items() if k != "prompt"}
-        if "arxx5" in self.config.config_name and "image" in obs_for_forward:
+        if self._uses_nested_aloha_io() and "images" in obs_for_forward:
+            image_obs = obs_for_forward.pop("images")
+            obs_for_forward.update(
+                {
+                    f"images/{image_key}": image
+                    for image_key, image in image_obs.items()
+                }
+            )
+        elif "arxx5" in self.config.config_name and "image" in obs_for_forward:
             image_obs = obs_for_forward.pop("image")
             obs_for_forward.update(
                 {f"image/{image_key}": image for image_key, image in image_obs.items()}
@@ -730,7 +813,12 @@ class OpenPi0ForRLActionPrediction(PI0Pytorch, BasePolicy):
                 compute_values,
             )
             # Euler step - use new tensor assignment instead of in-place operation
-            x_t = x_t_mean + self.sample_noise(x_t.shape, device) * x_t_std
+            if sample_method == "flow_sde":
+                step_noise = self.sample_sde_noise(x_t.shape, device)
+            else:
+                step_noise = self.sample_noise(x_t.shape, device)
+            x_t = x_t_mean + step_noise * x_t_std
+            # x_t = x_t_mean + self.sample_noise(x_t.shape, device) * x_t_std
             self._update_nft_state(nft_state, idx, x_t_prev, v_t, x_t, sample_method)
             log_prob = self.get_logprob_norm(x_t, x_t_mean, x_t_std)
             # store

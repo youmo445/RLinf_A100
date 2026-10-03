@@ -30,6 +30,8 @@ class SupportedEnvType(Enum):
     OPENSORAWM = "opensora_wm"
     WANWM = "wan_wm"
     WANMULTIVIEWWM = "wan_multiview_wm"
+    CTRLWORLDWM = "ctrlworld_wm"
+    WOVRWM = "wovr_wm"
     EMBODICHAIN = "embodichain"
     ROBOVERSE = "roboverse"
     D4RL = "d4rl"
@@ -121,6 +123,14 @@ def get_env_cls(env_type: str, env_cfg=None):
         from rlinf.envs.world_model.world_model_wan_multi_view_env import WanmultiviewEnv
 
         return WanmultiviewEnv
+    elif env_type == SupportedEnvType.CTRLWORLDWM:
+        from rlinf.envs.world_model.world_model_ctrlworld_env import CtrlWorldEnv
+
+        return CtrlWorldEnv
+    elif env_type == SupportedEnvType.WOVRWM:
+        from rlinf.envs.world_model.world_model_wovr_env import WovrEnv
+
+        return WovrEnv
     elif env_type == SupportedEnvType.EMBODICHAIN:
         from rlinf.envs.embodichain.embodichain_env import EmbodiChainEnv
 

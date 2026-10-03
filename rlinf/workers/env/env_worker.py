@@ -377,6 +377,21 @@ class EnvWorker(Worker):
             if self.enable_offload and hasattr(self.env_list[i], "offload"):
                 self.env_list[i].offload()
 
+    @staticmethod
+    def _get_reset_metadata(env: Any) -> dict[str, torch.Tensor]:
+        """Read optional logging IDs without adding them to policy inputs."""
+        # RecordVideo and other wrappers need not forward arbitrary attributes.
+        seen = set()
+        while id(env) not in seen:
+            seen.add(id(env))
+            get_metadata = getattr(type(env), "get_reset_metadata", None)
+            if callable(get_metadata):
+                return get_metadata(env)
+            env = getattr(env, "__dict__", {}).get("env")
+            if env is None:
+                break
+        return {}
+
     @Worker.timer("env_interact_step")
     def env_interact_step(
         self, chunk_actions: torch.Tensor, stage_id: int
@@ -447,6 +462,7 @@ class EnvWorker(Worker):
             truncations=chunk_truncations,
             intervene_actions=intervene_actions,
             intervene_flags=intervene_flags,
+            **self._get_reset_metadata(self.env_list[stage_id]),
         )
         return env_output, env_info
 
@@ -856,6 +872,7 @@ class EnvWorker(Worker):
                     ),
                     intervene_actions=None,
                     intervene_flags=None,
+                    **self._get_reset_metadata(self.env_list[stage_id]),
                 )
                 env_outputs.append(env_output)
         else:
@@ -872,6 +889,7 @@ class EnvWorker(Worker):
                     truncations=truncations,
                     intervene_actions=self.last_intervened_info_list[stage_id][0],
                     intervene_flags=self.last_intervened_info_list[stage_id][1],
+                    **self._get_reset_metadata(self.env_list[stage_id]),
                 )
                 env_outputs.append(env_output)
 
@@ -996,6 +1014,10 @@ class EnvWorker(Worker):
                     )
                     chunk_step_result = ChunkStepResult(
                         actions=rollout_result.forward_inputs.get("action", None),
+                        # Metadata belongs to the observation that produced
+                        # this action, before env_interact_step may reset it.
+                        reset_stage_ids=env_output.reset_stage_ids,
+                        reset_history_ids=env_output.reset_history_ids,
                         prev_logprobs=(
                             rollout_result.prev_logprobs
                             if self.collect_prev_infos

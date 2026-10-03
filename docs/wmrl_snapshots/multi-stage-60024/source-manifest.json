@@ -1,0 +1,204 @@
+{
+  "source": "/data/zsq/RLinf_A100",
+  "host_port": 60024,
+  "source_head": "6ec98cffa53ae3498147081a239c91d8757b2eef",
+  "branch": "wmrl/multi-stage-60024",
+  "tracked_modified_count": 15,
+  "files": {
+    "examples/embodiment/README_stage_metrics_zh.md": {
+      "kind": "file",
+      "sha256": "5e39bd72cd933a95628ec3967570b2c79260abb361c8c5653e25cff6ed656c55",
+      "bytes": 3874
+    },
+    "examples/embodiment/config/ctrlworld_robotwin_dual_task_new_structure_grpo_pi05.yaml": {
+      "kind": "file",
+      "sha256": "522bf17a2a800d9324f1c7ac2b2feb33751a3b6376eb12ff62cb1b4a87cb21be",
+      "bytes": 11578
+    },
+    "examples/embodiment/config/wanmultiview_arxx5_newstructure_new_cam_0723_grpo_pi05.yaml": {
+      "kind": "file",
+      "sha256": "a2f31b29cb423482fb50be4dab50ef7a653c917f3f70b942a3f29888fc153590",
+      "bytes": 12723
+    },
+    "examples/embodiment/config/wanmultiview_arxx5_newstructure_new_cam_0723_task_specific_grpo_pi05.yaml": {
+      "kind": "file",
+      "sha256": "8afcc8ea6919f49377d6cafbcf62100d6dc9be1144b20ed3e629b95915258ea5",
+      "bytes": 14093
+    },
+    "examples/embodiment/config/wanmultiview_arxx5_newstructure_new_cam_test_tube_grpo_pi05.yaml": {
+      "kind": "file",
+      "sha256": "7dbc38e7c5dd55f57e12b7b88a4e5ffca1e135ff246f0ea7df915cc6f9e511ec",
+      "bytes": 13300
+    },
+    "examples/embodiment/config/wanmultiview_robotwin_dual_task_new_structure_grpo_pi05.yaml": {
+      "kind": "file",
+      "sha256": "36078c1e441bb51a48c9b7f65eaceb31dfc4054dd61fc51c0f9406f1ef3195ea",
+      "bytes": 10489
+    },
+    "examples/embodiment/config/wanmultiview_robotwin_dual_task_new_structure_grpo_pi05_head_only_no_state.yaml": {
+      "kind": "file",
+      "sha256": "ec5c9ce0b14a2929f4396b6e86f8832c3e8c578a5213f47026b192d16a375ed0",
+      "bytes": 10730
+    },
+    "examples/embodiment/config/wanmultiview_robotwin_new_structure_grpo_pi05.yaml": {
+      "kind": "file",
+      "sha256": "1a0c40bea0f8b714e66675308027f088bab8f4c815d23e1f934484d70df7ec61",
+      "bytes": 10529
+    },
+    "examples/embodiment/config/wovr_robotwin_dual_task_grpo_pi05_head_only_no_state.yaml": {
+      "kind": "file",
+      "sha256": "586299b205112e1605e9fb6825788e583067c63ac949da5c1dde6dc15455b826",
+      "bytes": 11099
+    },
+    "examples/embodiment/config/wovr_three_view_robotwin_dual_task_grpo_pi05.yaml": {
+      "kind": "file",
+      "sha256": "3c27ff27cc40f61016eb5c1787ee5a335edcd50de075c5523da2f6acf1cfeecf",
+      "bytes": 11148
+    },
+    "examples/embodiment/prepare_packphone_stage_combined_initial_states.py": {
+      "kind": "file",
+      "sha256": "6d58e464104fed821fbfd996d18e01f2c7fa17b2d627ab2253bb6e633b45211d",
+      "bytes": 13712
+    },
+    "examples/embodiment/run_embodiment.sh": {
+      "kind": "file",
+      "sha256": "e48dae010388a789c62ebc73dfe068eb147cbf68e00a64f50b13c56de0a396b8",
+      "bytes": 2587
+    },
+    "examples/embodiment/run_pi05_wm_autoregressive_rollout.py": {
+      "kind": "file",
+      "sha256": "fd4df4597ee9661f8afa063d412d0688ca8580cba95e41bdb06261aef6f51bc3",
+      "bytes": 18238
+    },
+    "examples/embodiment/run_pi05_wovr_autoregressive_rollout.py": {
+      "kind": "file",
+      "sha256": "11a1b52fc76156a8aa64cd5bb407a2b89e9d7543bd375d74030cd8a3544b8f6c",
+      "bytes": 18972
+    },
+    "examples/embodiment/run_wovr_embodiment.sh": {
+      "kind": "file",
+      "sha256": "7fadf26c06b5794302b634dbaa50ad1c794c5f6fa5a3ce9df35dbdacc64f1caa",
+      "bytes": 225
+    },
+    "rlinf/data/embodied_io_struct.py": {
+      "kind": "file",
+      "sha256": "68356dba4107422ef9c07a627a79da9c4b1040eccfea59f8658d6dfec4b5e496",
+      "bytes": 34859
+    },
+    "rlinf/envs/__init__.py": {
+      "kind": "file",
+      "sha256": "00d3195fc29f9f7c22c1f0501d71cd430f04bfb4fa4459976c7da3bf65193c51",
+      "bytes": 5074
+    },
+    "rlinf/envs/action_utils.py": {
+      "kind": "file",
+      "sha256": "1b908c6463663bd5e1880a5dd56ca9ba891c2b80dbe01c29ea55522919792f2f",
+      "bytes": 10624
+    },
+    "rlinf/envs/world_model/arxx5_action_map.py": {
+      "kind": "file",
+      "sha256": "390b5d54fdee6c05d28996dd062b6260da68a665937613b80b6117a4cd4b9058",
+      "bytes": 4844
+    },
+    "rlinf/envs/world_model/reward_model_compat.py": {
+      "kind": "file",
+      "sha256": "cd182afdf414fc441e1b112a8dc144f567f220ffde1a36a9bdbac4cb327ccc77",
+      "bytes": 4822
+    },
+    "rlinf/envs/world_model/world_model_ctrlworld_env.py": {
+      "kind": "file",
+      "sha256": "9d624d04b3a4710b6aa58de54515f14498c789bc31c236e7a8befe33584d093e",
+      "bytes": 35078
+    },
+    "rlinf/envs/world_model/world_model_wan_env.py": {
+      "kind": "file",
+      "sha256": "772f6724fb808a744f0eb9d69dd65ec2bc23bc375387af3df5a75f63501544e6",
+      "bytes": 33122
+    },
+    "rlinf/envs/world_model/world_model_wan_multi_view_env.py": {
+      "kind": "file",
+      "sha256": "9ae864c3008f53eac8fe5af2edcea7c02bf445b4aae6dca802010d842cee0665",
+      "bytes": 141443
+    },
+    "rlinf/envs/world_model/world_model_wovr_env.py": {
+      "kind": "file",
+      "sha256": "6a0b69002c74cf4853b4a42618118365de7b6dffacc013b10a24b5c148349064",
+      "bytes": 42346
+    },
+    "rlinf/envs/wrappers/record_video.py": {
+      "kind": "file",
+      "sha256": "c81e601fd58f53fd17d82f3fb23c04db3561347cb37aacc198a07510f52ab191",
+      "bytes": 21005
+    },
+    "rlinf/models/embodiment/openpi/__init__.py": {
+      "kind": "file",
+      "sha256": "ca066b1df1efe5339a8491479630bb7b30120eadc708764303d6d577c09363ab",
+      "bytes": 5376
+    },
+    "rlinf/models/embodiment/openpi/dataconfig/__init__.py": {
+      "kind": "file",
+      "sha256": "9291ab1da2ce7d51bc8c59e946debf62614971dd3fa2b08c48743e7325eab362",
+      "bytes": 25869
+    },
+    "rlinf/models/embodiment/openpi/dataconfig/acwm_dataconfig.py": {
+      "kind": "file",
+      "sha256": "a134aa6e9e4853918a04fe55811df30242bc8f141347356d853a4282fa620b24",
+      "bytes": 3983
+    },
+    "rlinf/models/embodiment/openpi/dataconfig/robotwin_aloha_dataconfig.py": {
+      "kind": "file",
+      "sha256": "e55a80b4bc0e7a3e3595ce8181e1ab1407dba604f5449fd21697c8d17676cef8",
+      "bytes": 5089
+    },
+    "rlinf/models/embodiment/openpi/openpi_action_model.py": {
+      "kind": "file",
+      "sha256": "c8cc142f2cbfbd10c4477a618d9018f8b46d0b668498394bbf29b4d9364c6fd6",
+      "bytes": 61534
+    },
+    "rlinf/runners/embodied_runner.py": {
+      "kind": "file",
+      "sha256": "b6b2559429bdeb89132cfceee7cdf93e1c9098e434541c4a719029da13efc8b2",
+      "bytes": 19474
+    },
+    "rlinf/utils/stage_metric_aggregation.py": {
+      "kind": "file",
+      "sha256": "9e6d76613a5b8e40fa35505a4d56c55a881f29c82b39e13069b5d626e57610f9",
+      "bytes": 4087
+    },
+    "rlinf/utils/stage_metrics.py": {
+      "kind": "file",
+      "sha256": "6864e17e47897e757818e497524f8cb7725b8a14f4dca013755a7390f07c4e55",
+      "bytes": 7923
+    },
+    "rlinf/workers/actor/fsdp_actor_worker.py": {
+      "kind": "file",
+      "sha256": "8b57f302811e22442aad81b0a53168fcf8293cef2a873c13047df5b350bb902e",
+      "bytes": 76466
+    },
+    "rlinf/workers/env/env_worker.py": {
+      "kind": "file",
+      "sha256": "c4a82d31fdb060bedb077dba7485d887de63f1285f0b7efd5e9c051987013147",
+      "bytes": 51124
+    },
+    "tests/unit_tests/test_stage_logging_integration.py": {
+      "kind": "file",
+      "sha256": "5d3df95d04163388e19c0225e8a54a57a84c2a6bdb75a0aa853b73688808b7f0",
+      "bytes": 15769
+    },
+    "tests/unit_tests/test_stage_metadata.py": {
+      "kind": "file",
+      "sha256": "0209df041e2b4f36a7f9d6f87611dd7e083f5f84a1becee702e862c96edbfba4",
+      "bytes": 6206
+    },
+    "tests/unit_tests/test_stage_metric_aggregation.py": {
+      "kind": "file",
+      "sha256": "102a6a6f08f096f56452d5f4148e40f961a83b179645fa9e24129c124fb53954",
+      "bytes": 3999
+    },
+    "tests/unit_tests/test_stage_metrics.py": {
+      "kind": "file",
+      "sha256": "0699eea6721ad7c484820c0e3c4ed03382e80149e6ae0fccad620d8e2b748694",
+      "bytes": 7198
+    }
+  }
+}

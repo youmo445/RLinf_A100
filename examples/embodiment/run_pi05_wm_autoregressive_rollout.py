@@ -17,7 +17,7 @@ from omegaconf import OmegaConf, open_dict
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from rlinf.envs.world_model.world_model_wan_multi_view_env import WanmultiviewEnv
+from rlinf.envs import get_env_cls
 from rlinf.models import get_model
 
 
@@ -28,21 +28,21 @@ def parse_args():
     parser.add_argument(
         "--config-dir",
         type=Path,
-        default=Path("/data/zsq/RLinf/examples/embodiment/config"),
+        default=Path("/data/zsq/RLinf_A100/examples/embodiment/config"),
     )
     parser.add_argument(
         "--config-name",
         type=str,
-        default="wanmultiview_arxx5_grpo_pi05",
+        default="wanmultiview_arxx5_newstructure_new_cam_0723_task_specific_grpo_pi05.yaml",
         help="Hydra config name, with or without .yaml.",
     )
-    parser.add_argument("--episode-index", type=int, default=1)
-    parser.add_argument("--num-chunks", type=int, default=30)
+    parser.add_argument("--episode-index", type=int, default=120)
+    parser.add_argument("--num-chunks", type=int, default=40)
     parser.add_argument("--fps", type=int, default=15)
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("/data/zsq/RLinf/examples/embodiment/pi05_wm_rollouts_sft"),
+        default=Path("/data/zsq/RLinf_A100/examples/embodiment/pi05_wm_rollouts_sft"),
     )
     parser.add_argument(
         "--policy-model-path",
@@ -86,6 +86,17 @@ def parse_args():
         default="eval",
         help="Use eval for deterministic ODE-style rollout, train for flow-SDE exploration.",
     )
+    parser.add_argument(
+        "--reward-early-stop",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Override task_specific_rollout.stop_on_success from the yaml. "
+            "Use --no-reward-early-stop to keep rolling out after the reward "
+            "model reports success and extend task/global horizons to cover all "
+            "requested --num-chunks."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cuda")
     return parser.parse_args()
@@ -115,7 +126,42 @@ def load_cfg(args):
         elif args.kir_initial_frame is not None:
             cfg.env.train.enable_kir = True
             cfg.env.train.kir_initial_frame = int(args.kir_initial_frame)
+        if args.reward_early_stop is not None:
+            if "task_specific_rollout" not in cfg.env.train:
+                cfg.env.train.task_specific_rollout = OmegaConf.create({})
+            cfg.env.train.task_specific_rollout.stop_on_success = bool(
+                args.reward_early_stop
+            )
+        if args.reward_early_stop is False:
+            policy_chunk = int(cfg.actor.model.num_action_chunks)
+            requested_frames = int(args.num_chunks) * policy_chunk
+            if policy_chunk <= 0 or requested_frames <= 0:
+                raise ValueError(
+                    "--no-reward-early-stop requires positive --num-chunks and "
+                    "actor.model.num_action_chunks"
+                )
+
+            cfg.env.train.max_episode_steps = max(
+                int(cfg.env.train.max_episode_steps), requested_frames
+            )
+            cfg.env.train.max_steps_per_rollout_epoch = max(
+                int(cfg.env.train.max_steps_per_rollout_epoch), requested_frames
+            )
+            task_rollout_cfg = cfg.env.train.task_specific_rollout
+            for horizon_key in (
+                "horizon_by_instruction",
+                "horizon_by_reward_group",
+            ):
+                horizons = task_rollout_cfg.get(horizon_key, {})
+                for key in list(horizons.keys()):
+                    horizons[key] = max(int(horizons[key]), requested_frames)
     return cfg
+
+
+def build_world_model_env(env_cfg):
+    env_type = env_cfg.get("env_type", "wan_multiview_wm")
+    env_cls = get_env_cls(env_type, env_cfg)
+    return env_cls(env_cfg, num_envs=1, seed_offset=0, total_num_processes=1)
 
 
 def tensor_frames_to_uint8(frames: torch.Tensor) -> np.ndarray:
@@ -154,7 +200,10 @@ def parse_action14(text: str) -> np.ndarray:
     return np.asarray(vals, dtype=np.float32)
 
 
-def set_initial_action(env: WanmultiviewEnv, action14: np.ndarray):
+def set_initial_action(env, action14: np.ndarray):
+    if hasattr(env, "set_initial_action"):
+        env.set_initial_action(action14[None])
+        return
     action = torch.from_numpy(action14[None]).to(env.device, dtype=torch.float32)
     env.current_action14 = action
     if env.condition_action is not None and env.condition_action.shape[1] > 0:
@@ -287,17 +336,37 @@ def main():
     OmegaConf.save(cfg, out_dir / "resolved_config.yaml")
 
     env_cfg = cfg.env.train
-    env = WanmultiviewEnv(env_cfg, num_envs=1, seed_offset=0, total_num_processes=1)
+    env = build_world_model_env(env_cfg)
+    task_specific_rollout_enabled = bool(
+        getattr(env, "task_specific_rollout_enabled", False)
+    )
+    reward_early_stop_enabled = bool(
+        task_specific_rollout_enabled
+        and getattr(env, "task_specific_stop_on_success", False)
+    )
+    print(
+        "rollout control: "
+        f"task_specific={task_specific_rollout_enabled} "
+        f"reward_early_stop={reward_early_stop_enabled} "
+        f"cli_override={args.reward_early_stop}"
+    )
     obs, _ = env.reset(
         episode_indices=torch.tensor([args.episode_index], dtype=torch.long)
     )
     obs = unwrap_obs(obs)
+    episode_horizon = (
+        int(env.env_episode_max_steps[0].item())
+        if task_specific_rollout_enabled
+        and hasattr(env, "env_episode_max_steps")
+        else int(cfg.env.train.max_episode_steps)
+    )
     kir_active = bool(env.enable_kir and env.kir_initial_frame is not None)
     initial_frame_idx = int(env.kir_initial_frame) if kir_active else 0
     next_output_frame_idx = initial_frame_idx + 1
     print(
         f"reset episode={args.episode_index} kir={kir_active} "
-        f"initial_frame={initial_frame_idx} next_frame={next_output_frame_idx}"
+        f"initial_frame={initial_frame_idx} next_frame={next_output_frame_idx} "
+        f"episode_horizon={episode_horizon}"
     )
     if args.initial_action14 is not None:
         if kir_active:
@@ -325,6 +394,16 @@ def main():
             raise ValueError(
                 f"Policy action chunk length {action_chunk_len} must be a multiple "
                 f"of world-model chunk {env.chunk}"
+            )
+        if (
+            chunk_idx == 0
+            and args.reward_early_stop is False
+            and episode_horizon < args.num_chunks * action_chunk_len
+        ):
+            raise RuntimeError(
+                "The configured episode horizon cannot cover the requested full "
+                f"rollout: horizon={episode_horizon}, required="
+                f"{args.num_chunks * action_chunk_len}"
             )
 
         sub_reward_means = []
@@ -357,6 +436,10 @@ def main():
         "config_name": args.config_name,
         "policy_mode": args.policy_mode,
         "episode_index": int(args.episode_index),
+        "task_specific_rollout_enabled": task_specific_rollout_enabled,
+        "reward_early_stop_enabled": reward_early_stop_enabled,
+        "reward_early_stop_cli_override": args.reward_early_stop,
+        "episode_horizon": episode_horizon,
         "kir_active": bool(kir_active),
         "kir_initial_frame": int(env.kir_initial_frame) if kir_active else None,
         "initial_frame_idx": int(initial_frame_idx),

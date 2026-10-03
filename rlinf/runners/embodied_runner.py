@@ -29,6 +29,10 @@ from rlinf.utils.logging import get_logger
 from rlinf.utils.metric_logger import MetricLogger
 from rlinf.utils.metric_utils import compute_evaluate_metrics, print_metrics_table
 from rlinf.utils.runner_utils import check_progress
+from rlinf.utils.stage_metric_aggregation import (
+    STAGE_METRICS_KEY,
+    aggregate_stage_metrics,
+)
 from rlinf.utils.timers import Timer
 
 logger = logging.getLogger(__name__)
@@ -191,6 +195,9 @@ class EmbodiedRunner:
         for rank, metrics in enumerate(metrics_list):
             if not metrics:
                 continue
+            metrics = {k: v for k, v in metrics.items() if k != STAGE_METRICS_KEY}
+            if not metrics:
+                continue
             metrics_to_log = (
                 {f"{prefix}/{k}": v for k, v in metrics.items()}
                 if add_prefix
@@ -211,6 +218,8 @@ class EmbodiedRunner:
             if not metrics:
                 continue
             for key, value in metrics.items():
+                if key == STAGE_METRICS_KEY:
+                    continue
                 merged_metrics[key].append(value)
         return {
             key: (sum(values) / len(values))
@@ -401,6 +410,9 @@ class EmbodiedRunner:
 
             self.metric_logger.log(env_metrics, _step)
             self.metric_logger.log(rollout_metrics, _step)
+            stage_metrics = aggregate_stage_metrics(actor_rollout_metrics)
+            if stage_metrics:
+                self.metric_logger.log(stage_metrics, _step)
             self.metric_logger.log(time_metrics, _step)
             self.metric_logger.log(training_metrics, _step)
             self._log_ranked_metrics(

@@ -1,0 +1,226 @@
+diff --git a/src/openpi/training/config.py b/src/openpi/training/config.py
+index 4ca47e1..782caee 100644
+--- a/src/openpi/training/config.py
++++ b/src/openpi/training/config.py
+@@ -278,6 +278,60 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
+         )
+ 
+ 
++@dataclasses.dataclass(frozen=True)
++class LeRobotACWMDataConfig(DataConfigFactory):
++    # Action keys that will be used to read the action sequence from the dataset.
++    action_sequence_keys: Sequence[str] = ("action",)
++    # ACWM datasets store absolute 14D Aloha-style actions by default:
++    # [left 6 joints, left gripper, right 6 joints, right gripper].
++    # When enabled, convert only joint targets to deltas relative to the current state;
++    # keep grippers absolute.
++    use_delta_joint_actions: bool = False
++
++    @override
++    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
++        repack_transform = _transforms.Group(
++            inputs=[
++                _transforms.RepackTransform(
++                    {
++                        "images": {
++                            "cam_high": "observation.images.base_0",
++                            "cam_left_wrist": "observation.images.left_wrist_0",
++                            "cam_right_wrist": "observation.images.right_wrist_0",
++                        },
++                        "state": "observation.state",
++                        "actions": "action",
++                        "prompt": "prompt",
++                    }
++                )
++            ]
++        )
++
++        data_transforms = _transforms.Group(
++            inputs=[
++                aloha_policy.AlohaInputs(adapt_to_pi=False),
++                _transforms.DirectResizeImages(224, 224),
++            ],
++            outputs=[aloha_policy.AlohaOutputs(adapt_to_pi=False)],
++        )
++        if self.use_delta_joint_actions:
++            delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
++            data_transforms = data_transforms.push(
++                inputs=[_transforms.DeltaActions(delta_action_mask)],
++                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
++            )
++
++        model_transforms = ModelTransformFactory()(model_config)
++
++        return dataclasses.replace(
++            self.create_base_config(assets_dirs, model_config),
++            repack_transforms=repack_transform,
++            data_transforms=data_transforms,
++            model_transforms=model_transforms,
++            action_sequence_keys=self.action_sequence_keys,
++        )
++
++
+ @dataclasses.dataclass(frozen=True)
+ class LeRobotLiberoDataConfig(DataConfigFactory):
+     """
+@@ -761,6 +815,130 @@ _CONFIGS = [
+         pytorch_weight_path="/path/to/your/pytorch_weight_path",
+         num_train_steps=30_000,
+     ),
++
++    TrainConfig(
++        name="pi05_acwm_6tasks_0710_delta_finetune",
++        model=pi0_config.Pi0Config(
++            pi05=True,
++            action_horizon=16,
++            pytorch_compile_mode=None,
++        ),
++        data=LeRobotACWMDataConfig(
++            repo_id="zsq/acwm_6tasks_0710_lerobot_v21_10hz",
++            base_config=DataConfig(prompt_from_task=True),
++            use_delta_joint_actions=True,
++        ),
++        weight_loader=weight_loaders.CheckpointWeightLoader(
++            "/data/zsq/openpi/checkpoints/pi05_acwm_full_finetune/27000/params"
++        ),
++        lr_schedule=_optimizer.CosineDecaySchedule(
++            warmup_steps=1_000,
++            peak_lr=5e-5,
++            decay_steps=1_000_000,
++            decay_lr=5e-5,
++        ),
++        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
++        ema_decay=0.999,
++        num_train_steps=30_000,
++        batch_size=256,
++        num_workers=8,
++        fsdp_devices=8,
++    ),
++
++    TrainConfig(
++        name="pi05_packing_phone_full_finetune",
++        model=pi0_config.Pi0Config(
++            pi05=True,
++            action_horizon=16,
++            pytorch_compile_mode=None,
++        ),
++        data=LeRobotACWMDataConfig(
++            repo_id="zsq/packing_phone_0626_200_lerobot_v21_10hz",
++            base_config=DataConfig(prompt_from_task=True),
++        ),
++        # pytorch_weight_path="/data/zsq/pi05_ckpt/dual_task/300_torch",
++        weight_loader=weight_loaders.CheckpointWeightLoader("/data/zsq/openpi/checkpoints/openpi-assets/checkpoints/pi05_base/params"),
++        lr_schedule=_optimizer.CosineDecaySchedule(
++            warmup_steps=1_000,
++            peak_lr=5e-5,
++            decay_steps=1_000_000,
++            decay_lr=5e-5,
++        ),
++        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
++        ema_decay=0.999,
++        num_train_steps=30_000,
++        batch_size=256,
++        num_workers=8,
++        fsdp_devices=8,
++    ),
++    TrainConfig(
++        name="pi05_packing_phone_stage4_100_continue_finetune",
++        model=pi0_config.Pi0Config(
++            pi05=True,
++            action_horizon=16,
++            pytorch_compile_mode=None,
++        ),
++        data=LeRobotACWMDataConfig(
++            repo_id="zsq/packing_phone_0724_stage4_100_lerobot_v21_10hz",
++            assets=AssetsConfig(
++                assets_dir=(
++                    "/data/zsq/openpi/checkpoints/"
++                    "pi05_packing_phone_400_continue_finetune/"
++                    "phone400_continue_from_step28000/29999/assets"
++                ),
++                asset_id="zsq/packing_phone_0626_0716_400_lerobot_v21_10hz",
++            ),
++            base_config=DataConfig(prompt_from_task=True),
++        ),
++        # pytorch_weight_path="/data/zsq/pi05_ckpt/dual_task/300_torch",
++        weight_loader=weight_loaders.CheckpointWeightLoader(
++            "/data/zsq/openpi/checkpoints/"
++            "pi05_packing_phone_400_continue_finetune/"
++            "phone400_continue_from_step28000/29999/params"
++        ),
++        lr_schedule=_optimizer.CosineDecaySchedule(
++            warmup_steps=200,
++            peak_lr=1e-5,
++            decay_steps=5_000,
++            decay_lr=1e-6,
++        ),
++        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
++        ema_decay=0.999,
++        num_train_steps=5_000,
++        batch_size=256,
++        num_workers=8,
++        fsdp_devices=8,
++        save_interval=1_000,
++        keep_period=1_000,
++    ),
++
++    TrainConfig(
++        name="pi05_acwm_6tasks_0710_0716_full_finetune",
++        model=pi0_config.Pi0Config(
++            pi05=True,
++            action_horizon=16,
++            pytorch_compile_mode=None,
++        ),
++        data=LeRobotACWMDataConfig(
++            repo_id="zsq/acwm_6tasks_0710_0716_merged_lerobot_v21_10hz",
++            base_config=DataConfig(prompt_from_task=True),
++        ),
++        weight_loader=weight_loaders.CheckpointWeightLoader(
++            "/data/zsq/openpi/checkpoints/29999/params"
++        ),
++        lr_schedule=_optimizer.CosineDecaySchedule(
++            warmup_steps=1_000,
++            peak_lr=5e-5,
++            decay_steps=1_000_000,
++            decay_lr=5e-5,
++        ),
++        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
++        ema_decay=0.999,
++        num_train_steps=30_000,
++        batch_size=256,
++        num_workers=8,
++        fsdp_devices=8,
++    ),
+     #
+     # Fine-tuning Aloha configs.
+     #
+diff --git a/src/openpi/transforms.py b/src/openpi/transforms.py
+index 272375e..4c65bbe 100644
+--- a/src/openpi/transforms.py
++++ b/src/openpi/transforms.py
+@@ -190,7 +190,25 @@ class ResizeImages(DataTransformFn):
+         data["image"] = {k: image_tools.resize_with_pad(v, self.height, self.width) for k, v in data["image"].items()}
+         return data
+ 
++@dataclasses.dataclass(frozen=True)
++class DirectResizeImages(DataTransformFn):
++    height: int
++    width: int
++    method: jax.image.ResizeMethod = jax.image.ResizeMethod.LINEAR
+ 
++    def __call__(self, data: DataDict) -> DataDict:
++        def resize(image):
++            image = np.asarray(image)
++            resized = jax.image.resize(image, (self.height, self.width, image.shape[-1]), method=self.method)
++            if image.dtype == np.uint8:
++                return np.round(np.asarray(resized)).clip(0, 255).astype(np.uint8)
++            if np.issubdtype(image.dtype, np.floating):
++                return np.asarray(resized, dtype=image.dtype)
++            raise ValueError(f"Unsupported image dtype: {image.dtype}")
++
++        data["image"] = {k: resize(v) for k, v in data["image"].items()}
++        return data
++    
+ @dataclasses.dataclass(frozen=True)
+ class SubsampleActions(DataTransformFn):
+     stride: int

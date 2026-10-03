@@ -1,0 +1,76 @@
+{
+  "openpi": {
+    "path": "/data/zsq/openpi",
+    "head": "c23745b5ad24e98f66967ea795a07b2588ed6c79",
+    "tracked_dirty": [
+      " M src/openpi/training/config.py",
+      " M src/openpi/transforms.py"
+    ],
+    "required_source_files": {
+      "src/openpi/training/config.py": {
+        "kind": "file",
+        "sha256": "81252c47d155f7cb860fb27e7cb5259c3c383531425aff13ff5004e11fb75031",
+        "bytes": 51155,
+        "tracked": true
+      },
+      "src/openpi/transforms.py": {
+        "kind": "file",
+        "sha256": "395bc8227d42cff58296ff8268c042309294076784ec4cf56dcc5d7fac5b4ca3",
+        "bytes": 16568,
+        "tracked": true
+      }
+    },
+    "untracked_required": [],
+    "patch": "patches/openpi-working-tree.patch",
+    "patch_sha256": "e6becb660858da6fd5c52a73c9b0e0f736d2ad0cde8c2754a760bfedaddb5583"
+  },
+  "diffsynth": {
+    "path": "/data/zsq/diffsynth-studio-wujie-ppu",
+    "head": "2d05394811e4d169658450d763f9b97babee5a1a",
+    "tracked_dirty": [],
+    "required_source_files": {
+      "diffsynth/models/reward_model.py": {
+        "kind": "file",
+        "sha256": "be400d98f7d4074df976dac72cfcddb005bf1299be27737065940c0979f17161",
+        "bytes": 4623,
+        "tracked": true
+      },
+      "diffsynth/models/wan_video_vace_wan22_codex.py": {
+        "kind": "file",
+        "sha256": "71c0a43307783be4b255707133af2cd0dfef708f9b45d6a50132d277452c55f8",
+        "bytes": 6220,
+        "tracked": true
+      },
+      "diffsynth/pipelines/wan_video_new_wan22_codex.py": {
+        "kind": "file",
+        "sha256": "2e69b4900f72c36ac0d6fa8842ecd367aa6eb24c985cd736c87e939613858d3a",
+        "bytes": 8678,
+        "tracked": true
+      },
+      "diffsynth/trainers/arxx5_dataset4_wancontrolmultiview.py": {
+        "kind": "file",
+        "sha256": "d6908d9291fde283a5d004cae73da42a38511f298bcd45c3a673eaeb54ac6826",
+        "bytes": 43127,
+        "tracked": true
+      },
+      "diffsynth/trainers/arxx5_urdf_fk.py": {
+        "kind": "file",
+        "sha256": "daaf612792efe4be1d00ae7efaaaae529e06044cba281926c2ff512ff1511198",
+        "bytes": 8798,
+        "tracked": true
+      }
+    },
+    "untracked_required": [],
+    "patch": null,
+    "patch_sha256": null
+  },
+  "robotwin": {
+    "path": "/data/zsq/RoboTwin",
+    "head": "0008ae6800df9f75fc8de7098bacb01735fd8fd2",
+    "tracked_dirty": [],
+    "required_source_files": {},
+    "untracked_required": [],
+    "patch": null,
+    "patch_sha256": null
+  }
+}

@@ -57,6 +57,8 @@ class EnvOutput:
 
     intervene_actions: Optional[torch.Tensor] = None  # [B]
     intervene_flags: Optional[torch.Tensor] = None  # [B]
+    reset_stage_ids: Optional[torch.Tensor] = None  # [B, 1], logging only
+    reset_history_ids: Optional[torch.Tensor] = None  # [B, 1], logging only
 
     def __post_init__(self):
         self.obs = put_tensor_device(self.obs, "cpu")
@@ -89,6 +91,12 @@ class EnvOutput:
             if self.intervene_flags is not None
             else None
         )
+        for name in ("reset_stage_ids", "reset_history_ids"):
+            value = getattr(self, name)
+            if value is not None:
+                setattr(
+                    self, name, value.detach().cpu().long().reshape(-1, 1).clone()
+                )
 
     def prepare_observations(self, obs: dict[str, Any]) -> dict[str, Any]:
         image_tensor = obs["main_images"] if "main_images" in obs else None
@@ -341,6 +349,8 @@ class ChunkStepResult:
     rewards: torch.Tensor = None  # [B, 1]
     forward_inputs: dict[str, torch.Tensor] = field(default_factory=dict)
     versions: torch.Tensor = None  # [B, 1]
+    reset_stage_ids: Optional[torch.Tensor] = None  # [B, 1], action-start metadata
+    reset_history_ids: Optional[torch.Tensor] = None  # [B, 1], action-start metadata
 
     def __post_init__(self):
         if self.actions is not None:
@@ -361,6 +371,12 @@ class ChunkStepResult:
             self.forward_inputs = put_tensor_device(self.forward_inputs, "cpu")
         if self.versions is not None:
             self.versions = self.versions.cpu().contiguous()
+        for name in ("reset_stage_ids", "reset_history_ids"):
+            value = getattr(self, name)
+            if value is not None:
+                setattr(
+                    self, name, value.detach().cpu().long().reshape(-1, 1).clone()
+                )
 
 
 @dataclass
@@ -384,6 +400,8 @@ class Trajectory:
 
     curr_obs: dict[str, Any] = field(default_factory=dict)
     next_obs: dict[str, Any] = field(default_factory=dict)
+    reset_stage_ids: Optional[torch.Tensor] = None  # [T, B, 1], logging only
+    reset_history_ids: Optional[torch.Tensor] = None  # [T, B, 1], logging only
 
     @staticmethod
     def _generate_field_mask(
@@ -488,6 +506,8 @@ class Trajectory:
                     dones=dones,
                     prev_logprobs=prev_logprobs,
                     prev_values=prev_values,
+                    reset_stage_ids=apply_mask(self.reset_stage_ids, i),
+                    reset_history_ids=apply_mask(self.reset_history_ids, i),
                     forward_inputs=forward_inputs,
                     curr_obs=curr_obs,
                     next_obs=next_obs,
@@ -525,6 +545,8 @@ class EmbodiedRolloutResult:
         default_factory=list
     )  # trajectory_length + rollout_epoch
     versions: list[torch.Tensor] = field(default_factory=list)  # trajectory_length
+    reset_stage_ids: list[Optional[torch.Tensor]] = field(default_factory=list)
+    reset_history_ids: list[Optional[torch.Tensor]] = field(default_factory=list)
     forward_inputs: list[dict[str, Any]] = field(
         default_factory=list
     )  # trajectory_length
@@ -535,6 +557,8 @@ class EmbodiedRolloutResult:
     def append_step_result(self, result: ChunkStepResult):
         if result.actions is not None:
             self.actions.append(result.actions)
+            self.reset_stage_ids.append(result.reset_stage_ids)
+            self.reset_history_ids.append(result.reset_history_ids)
             self.intervene_flags.append(
                 torch.zeros_like(result.actions, dtype=torch.bool)
             )
@@ -629,6 +653,20 @@ class EmbodiedRolloutResult:
         )
         if len(self.actions) > 0:
             trajectory.actions = torch.stack(self.actions, dim=0).cpu().contiguous()
+        for name in ("reset_stage_ids", "reset_history_ids"):
+            values = getattr(self, name)
+            if any(value is not None for value in values):
+                # Missing optional metadata stays explicitly unknown rather
+                # than shifting subsequent action-aligned IDs to earlier steps.
+                aligned_values = [
+                    value
+                    if value is not None
+                    else torch.full((action.shape[0], 1), -1, dtype=torch.long)
+                    for action, value in zip(self.actions, values)
+                ]
+                setattr(
+                    trajectory, name, torch.stack(aligned_values).cpu().contiguous()
+                )
         if len(self.intervene_flags) > 0:
             trajectory.intervene_flags = (
                 torch.stack(self.intervene_flags, dim=0).cpu().contiguous()
@@ -783,6 +821,22 @@ def convert_trajectories_to_batch(
     # -------- tensor fields --------
     reference_trajectory = trajectories[0]
     for field_name in reference_trajectory.__dataclass_fields__.keys():
+        if field_name in ("reset_stage_ids", "reset_history_ids"):
+            values = [getattr(traj, field_name) for traj in trajectories]
+            if any(value is not None for value in values):
+                aligned_values = []
+                for traj, value in zip(trajectories, values):
+                    if value is None:
+                        if traj.actions is None:
+                            raise ValueError(
+                                "Cannot align reset metadata without trajectory actions"
+                            )
+                        value = torch.full(
+                            (*traj.actions.shape[:2], 1), -1, dtype=torch.long
+                        )
+                    aligned_values.append(value)
+                batch[field_name] = torch.cat(aligned_values, dim=1)
+            continue
         if not isinstance(getattr(reference_trajectory, field_name), torch.Tensor):
             continue
         field_list = [

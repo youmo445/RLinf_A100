@@ -77,6 +77,7 @@ from rlinf.utils.placement import (
     ModelParallelComponentPlacement,
 )
 from rlinf.utils.pytree import register_pytree_dataclasses
+from rlinf.utils.stage_metrics import collect_stage_metrics
 from rlinf.utils.utils import (
     clear_memory,
     compute_entropy_from_logits,
@@ -1165,6 +1166,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             rollout_batch["loss_mask_sum"] = loss_mask_sum
 
         pre_filter_loss_mask = rollout_batch.get("loss_mask", None)
+        reward_filter_group_keep = None
 
         # filter data by rewards
         if self.cfg.algorithm.get("filter_rewards", False):
@@ -1198,6 +1200,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             ) & (
                 mean_reward_in_group <= self.cfg.algorithm.rewards_upper_bound
             )  # [n_prompts]
+            reward_filter_group_keep = reward_filter_mask
 
             # extend mask dimension
             reward_filter_mask = reward_filter_mask.repeat_interleave(
@@ -1215,11 +1218,52 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             else:
                 rollout_batch["loss_mask"] = reward_filter_mask
 
+        self._stage_rollout_metrics = self._collect_stage_rollout_metrics(
+            rollout_batch,
+            pre_filter_loss_mask=pre_filter_loss_mask,
+            group_filter_keep=reward_filter_group_keep,
+        )
         self._rollout_diagnostic_metrics = self._save_rollout_diagnostics(
             rollout_batch=rollout_batch,
             pre_filter_loss_mask=pre_filter_loss_mask,
         )
         return rollout_batch
+
+    def _collect_stage_rollout_metrics(
+        self,
+        rollout_batch,
+        pre_filter_loss_mask=None,
+        group_filter_keep=None,
+    ):
+        # This must run even when large rollout NPZ diagnostics are disabled.
+        if not any(
+            key in rollout_batch for key in ("reset_stage_ids", "reset_history_ids")
+        ):
+            return {}
+        try:
+            arrays = {
+                key: self._rollout_tensor_to_numpy(rollout_batch.get(key))
+                for key in (
+                    "rewards",
+                    "reset_stage_ids",
+                    "reset_history_ids",
+                    "loss_mask",
+                    "loss_mask_sum",
+                    "dones",
+                )
+            }
+            return collect_stage_metrics(
+                **arrays,
+                pre_filter_loss_mask=self._rollout_tensor_to_numpy(pre_filter_loss_mask),
+                group_filter_keep=self._rollout_tensor_to_numpy(group_filter_keep),
+                group_size=int(self.cfg.algorithm.get("group_size", 8)),
+                success_threshold=float(
+                    self.cfg.env.train.get("success_reward_threshold", 0.9)
+                ),
+            )
+        except Exception as exc:
+            self.logger.warning(f"Failed to collect reset-stage diagnostics: {exc}")
+            return {}
 
     def _reshape_action_for_rollout_diagnostics(
         self, actions: Optional[torch.Tensor]
@@ -1337,6 +1381,9 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 "actor_rank": np.asarray(int(self._rank), dtype=np.int64),
                 "actor_world_size": np.asarray(int(self._world_size), dtype=np.int64),
             }
+            for key in ("reset_stage_ids", "reset_history_ids"):
+                if key in rollout_batch:
+                    arrays[key] = self._rollout_tensor_to_numpy(rollout_batch[key])
 
             if pre_filter_loss_mask is not None:
                 arrays["pre_filter_loss_mask"] = self._rollout_tensor_to_numpy(
@@ -1495,6 +1542,8 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
 
         rollout_metrics = compute_rollout_metrics(self.rollout_batch)
         rollout_metrics.update(self._rollout_diagnostic_metrics)
+        if getattr(self, "_stage_rollout_metrics", None):
+            rollout_metrics["__stage_metrics__"] = self._stage_rollout_metrics
         return rollout_metrics
 
     def _build_sft_data_loader(self):

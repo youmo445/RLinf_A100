@@ -57,6 +57,8 @@ class RecordVideo(gym.Wrapper):
             ``video_base_dir`` (output directory root),
             ``fps`` (optional FPS override),
             ``info_on_video`` (whether to render overlay text),
+            ``default_reward_on_video`` (whether to render the reward argument),
+            ``default_termination_on_video`` (whether to render termination),
             ``extra_info_on_video`` (list of ``info`` keys to render).
         fps: Explicit FPS override. If ``None``, FPS is resolved from
             ``video_cfg.fps``, environment config/metadata, then fallback ``30``.
@@ -298,14 +300,18 @@ class RecordVideo(gym.Wrapper):
         """Build a per-env info dict for overlay."""
         info_item: dict[str, Any] = {}
 
-        if rewards is not None:
+        if rewards is not None and self.video_cfg.get(
+            "default_reward_on_video", True
+        ):
             value = self._value_for_env(rewards, env_id)
             if time_idx is not None and isinstance(value, (np.ndarray, list, tuple)):
                 if len(value) > time_idx:
                     value = value[time_idx]
             info_item["reward"] = float(value) if value is not None else value
 
-        if terminations is not None:
+        if terminations is not None and self.video_cfg.get(
+            "default_termination_on_video", True
+        ):
             value = self._value_for_env(terminations, env_id)
             if time_idx is not None and isinstance(value, (np.ndarray, list, tuple)):
                 if len(value) > time_idx:
@@ -323,6 +329,8 @@ class RecordVideo(gym.Wrapper):
                         value = value.item()
                     elif value.size == 1:
                         value = value.reshape(-1)[0].item()
+                elif isinstance(value, np.generic):
+                    value = value.item()
                 elif isinstance(value, numbers.Number):
                     pass
                 else:
