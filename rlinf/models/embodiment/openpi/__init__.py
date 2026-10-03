@@ -99,7 +99,17 @@ def get_model(cfg: DictConfig, torch_dtype=None):
         # that the policy is using the same normalization stats as the original training process.
         if data_config.asset_id is None:
             raise ValueError("Asset id is required to load norm stats.")
-        norm_stats = _checkpoints.load_norm_stats(checkpoint_dir, data_config.asset_id)
+        try:
+            norm_stats = _checkpoints.load_norm_stats(
+                checkpoint_dir, data_config.asset_id
+            )
+        except FileNotFoundError:
+            checkpoint_assets_dir = os.path.join(checkpoint_dir, "assets")
+            if not os.path.isdir(checkpoint_assets_dir):
+                raise
+            norm_stats = _checkpoints.load_norm_stats(
+                checkpoint_assets_dir, data_config.asset_id
+            )
     # wrappers
     repack_transforms = transforms.Group()
     default_prompt = None

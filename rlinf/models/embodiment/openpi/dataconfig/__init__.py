@@ -65,8 +65,90 @@ from rlinf.models.embodiment.openpi.dataconfig.robotwin_aloha_dataconfig import 
 from rlinf.models.embodiment.openpi.dataconfig.arxx5_dataconfig import (
     LeRobotArxX5BimanualDataConfig,
 )
+from rlinf.models.embodiment.openpi.dataconfig.acwm_dataconfig import (
+    LeRobotACWMDataConfig,
+)
 
 _CONFIGS = [
+    TrainConfig(
+        name="pi05_arxx5_packphone_0809_whole_task",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=16,
+        ),
+        data=LeRobotACWMDataConfig(
+            repo_id="zsq/packing_phone_0729_20_34_46_lerobot_v21_10hz",
+            assets=AssetsConfig(
+                asset_id="zsq/packing_phone_0729_20_34_46_lerobot_v21_10hz"
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            adapt_to_pi=False,
+            extra_delta_transform=False,
+            resize_height=224,
+            resize_width=224,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/data/zsq/pi05_ckpt/packphoneraw100/29999torch"
+        ),
+        pytorch_weight_path="/data/zsq/pi05_ckpt/packphoneraw100/29999torch",
+        batch_size=32,
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_arxx5_newcam_0719",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=16,
+        ),
+        data=LeRobotACWMDataConfig(
+            repo_id="zsq/acwm_6tasks_0710_0716_merged_lerobot_v21_10hz",
+            assets=AssetsConfig(
+                asset_id="zsq/acwm_6tasks_0710_0716_merged_lerobot_v21_10hz"
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            adapt_to_pi=False,
+            extra_delta_transform=False,
+            resize_height=224,
+            resize_width=224,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/data/zsq/openpi/checkpoints/pi05_new_6tasks/12000torch"
+        ),
+        pytorch_weight_path=(
+            "/data/zsq/openpi/checkpoints/pi05_new_6tasks/12000torch"
+        ),
+        batch_size=32,
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_arxx5_newcam",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=16,
+        ),
+        data=LeRobotACWMDataConfig(
+            repo_id="zsq/acwm_6tasks_0713_wm_lerobot_v21_10hz",
+            assets=AssetsConfig(asset_id="physical-intelligence/robotwin"),
+            base_config=DataConfig(prompt_from_task=True),
+            adapt_to_pi=False,
+            extra_delta_transform=False,
+            resize_height=224,
+            resize_width=224,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/data/zsq/openpi/checkpoints/pi05_acwm_6tasks_0710_full_finetune/"
+            "0711_acwm_6tasks_v1/29999torch"
+        ),
+        pytorch_weight_path=(
+            "/data/zsq/openpi/checkpoints/pi05_acwm_6tasks_0710_full_finetune/"
+            "0711_acwm_6tasks_v1/29999torch"
+        ),
+        batch_size=32,
+        num_train_steps=30_000,
+    ),
     TrainConfig(
         name="pi05_arxx5",
         model=pi0_config.Pi0Config(
@@ -118,6 +200,43 @@ _CONFIGS = [
         batch_size=160,
         num_train_steps=30_000,
         # num_workers=0,
+    ),
+    TrainConfig(
+        name="pi05_robotwin_head_only_no_state",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=16,
+            discrete_state_input=False,
+        ),
+        data=LeRobotAlohaDataConfig(
+            repo_id="demo_clean_repo",
+            adapt_to_pi=False,
+            ignore_state=True,
+            extra_delta_transform=False,
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                            },
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/data/zsq/pi05_ckpt/robotwin_head_only_no_state/10000/params"
+        ),
+        pytorch_weight_path=(
+            "/data/zsq/pi05_ckpt/robotwin_head_only_no_state/10000torch"
+        ),
+        batch_size=256,
+        num_train_steps=20_000,
     ),
     TrainConfig(
         name="pi0_libero",

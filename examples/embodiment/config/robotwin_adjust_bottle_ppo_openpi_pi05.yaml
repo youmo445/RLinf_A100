@@ -94,9 +94,11 @@ env:
     max_episode_steps: 200
     max_steps_per_rollout_epoch: 200
     group_size: ${algorithm.group_size}
-    assets_path: "/path/to/robotwin_assets"
+    assets_path: "/data/zsq/RoboTwin"
     seeds_path: ${oc.env:REPO_PATH}/rlinf/envs/robotwin/seeds/train_seeds.json
     center_crop: False
+    video_cfg:
+      save_video: False
     task_config:
       embodiment: [aloha-agilex]
       camera:
@@ -119,7 +121,7 @@ env:
     group_size: 1
     use_fixed_reset_state_ids: True
     is_eval: True
-    assets_path: "/path/to/robotwin_assets"
+    assets_path: "/data/zsq/RoboTwin"
     seeds_path: ${oc.env:REPO_PATH}/rlinf/envs/robotwin/seeds/eval_seeds.json
     video_cfg:
       save_video: True
@@ -158,7 +160,7 @@ actor:
 
   # Override the default values in model/openpi_pi05
   model:
-    model_path: "/path/to/RLinf/RLinf-Pi05-RoboTwin-SFT-adjust_bottle"
+    model_path: "/data/zsq/RLinf_A100/RLinf-Pi05-RoboTwin-SFT-adjust_bottle"
     num_action_chunks: 50 # interface for the env
     action_dim: 14
     add_value_head: True

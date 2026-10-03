@@ -1,5 +1,6 @@
 #! /bin/bash
-export PYTHONPATH=/data/zsq/diffsynth-studio-wujie-ppu:/data/zsq/RLinf:$PYTHONPATH 
+DIFFSYNTH_PATH=${DIFFSYNTH_PATH:-/data/zsq/diffsynth-studio-wujie-ppu}
+export PYTHONPATH=${DIFFSYNTH_PATH}:$PYTHONPATH
 export EMBODIED_PATH="$( cd "$(dirname "${BASH_SOURCE[0]}" )" && pwd )"
 export REPO_PATH=$(dirname $(dirname "$EMBODIED_PATH"))
 export SRC_FILE="${EMBODIED_PATH}/train_embodied_agent.py"

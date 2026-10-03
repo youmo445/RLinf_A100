@@ -24,6 +24,15 @@ from rlinf.models.embodiment.openpi.policies import aloha_policy
 
 
 @dataclasses.dataclass(frozen=True)
+class InjectZeroState(_transforms.DataTransformFn):
+    state_dim: int = 14
+
+    def __call__(self, data: dict) -> dict:
+        data["state"] = np.zeros((self.state_dim,), dtype=np.float32)
+        return data
+
+
+@dataclasses.dataclass(frozen=True)
 class LeRobotAlohaDataConfig(DataConfigFactory):
     """Data configuration for the RoboTwin (Aloha) dataset in LeRobot v2.1 Parquet format."""
 
@@ -37,6 +46,11 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
     # If True, maps the data to the internal Pi0 space (e.g., flipping specific joints).
     # Set to False for standard Aloha data that does not require realignment.
     adapt_to_pi: bool = True
+
+    # If True, discard the environment state and inject a zero placeholder.
+    # PI0.5 still requires a state field in Observation, even when
+    # discrete_state_input=False prevents it from entering prompt tokens.
+    ignore_state: bool = False
 
     # Configuration to map dataset keys to the keys expected by the model.
     repack_transforms: _transforms.Group = dataclasses.field(
@@ -71,8 +85,20 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
     def create(
         self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig
     ) -> DataConfig:  # Apply Aloha-specific policy transforms (e.g. normalization).
+        if self.ignore_state and self.extra_delta_transform:
+            raise ValueError(
+                "ignore_state=True requires extra_delta_transform=False"
+            )
+
+        input_transforms = []
+        if self.ignore_state:
+            input_transforms.append(InjectZeroState(14))
+        input_transforms.append(
+            aloha_policy.AlohaInputs(adapt_to_pi=self.adapt_to_pi)
+        )
+
         data_transforms = _transforms.Group(
-            inputs=[aloha_policy.AlohaInputs(adapt_to_pi=self.adapt_to_pi)],
+            inputs=input_transforms,
             outputs=[aloha_policy.AlohaOutputs(adapt_to_pi=self.adapt_to_pi)],
         )
 

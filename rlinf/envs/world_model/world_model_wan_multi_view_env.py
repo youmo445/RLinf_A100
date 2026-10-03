@@ -39,12 +39,15 @@ from diffsynth.trainers.arxx5_dataset4_wancontrolmultiview import (
     scale_intrinsic,
     to_uint8_img,
 )
-
 from PIL import Image
 
 from rlinf.data.datasets.world_model import NpyTrajectoryDatasetWrapper
 from rlinf.envs.utils import recursive_to_device
+from rlinf.envs.world_model.arxx5_action_map import generate_traj_map_alpha
 from rlinf.envs.world_model.base_world_env import BaseWorldEnv
+from rlinf.envs.world_model.reward_model_compat import (
+    ResnetRewModel as CompatibleResnetRewModel,
+)
 from rlinf.envs.world_model.robotwin_camera_fk import (
     RobotWinCameraFKProjector,
     make_abs_actions_from_fk_wxyz,
@@ -53,6 +56,174 @@ from rlinf.envs.world_model.robotwin_camera_fk import (
 )
 
 __all__ = ["WanmultiviewEnv"]
+
+
+class InstructionRoutedResnetRewModel(torch.nn.Module):
+    """Route each frame to a task-specific binary reward model by instruction."""
+
+    def __init__(self, checkpoint_root, instruction_to_checkpoint, threshold=None):
+        super().__init__()
+        checkpoint_root = Path(checkpoint_root)
+        instruction_to_checkpoint = dict(instruction_to_checkpoint)
+        if not instruction_to_checkpoint:
+            raise ValueError(
+                "InstructionRoutedResnetRewModel requires "
+                "reward_model.instruction_to_checkpoint"
+            )
+
+        self.models = torch.nn.ModuleDict()
+        self.instruction_to_model_key = {}
+        for model_idx, (instruction, checkpoint_value) in enumerate(
+            instruction_to_checkpoint.items()
+        ):
+            normalized_instruction = str(instruction).strip()
+            if not normalized_instruction:
+                raise ValueError("Reward-model instruction cannot be empty")
+            checkpoint_path = Path(str(checkpoint_value))
+            if not checkpoint_path.is_absolute():
+                checkpoint_path = checkpoint_root / checkpoint_path
+            if not checkpoint_path.is_file():
+                raise FileNotFoundError(checkpoint_path)
+
+            model_key = f"task_{model_idx}"
+            self.models[model_key] = ResnetRewModel(
+                checkpoint_path=str(checkpoint_path),
+                threshold=threshold,
+            )
+            self.instruction_to_model_key[normalized_instruction] = model_key
+
+    @torch.no_grad()
+    def predict_rew(self, obs, instructions=None):
+        if instructions is None or len(instructions) != obs.shape[0]:
+            raise ValueError(
+                "Instruction-routed reward inference expects one instruction per frame: "
+                f"frames={obs.shape[0]}, instructions="
+                f"{None if instructions is None else len(instructions)}"
+            )
+
+        normalized = [str(item).strip() for item in instructions]
+        unknown = sorted(
+            set(normalized).difference(self.instruction_to_model_key)
+        )
+        if unknown:
+            raise ValueError(
+                f"No reward model configured for instructions {unknown}. "
+                f"Known instructions: {sorted(self.instruction_to_model_key)}"
+            )
+
+        rewards = torch.empty(
+            obs.shape[0], device=obs.device, dtype=torch.float32
+        )
+        grouped_indices = {}
+        for sample_idx, instruction in enumerate(normalized):
+            model_key = self.instruction_to_model_key[instruction]
+            grouped_indices.setdefault(model_key, []).append(sample_idx)
+
+        for model_key, sample_indices in grouped_indices.items():
+            indices = torch.as_tensor(
+                sample_indices, device=obs.device, dtype=torch.long
+            )
+            task_rewards = self.models[model_key].predict_rew(
+                obs.index_select(0, indices)
+            )
+            rewards.index_copy_(0, indices, task_rewards.reshape(-1))
+        return rewards
+
+
+class InstructionRoutedGripperTintResnetRewModel(torch.nn.Module):
+    """Route tinted head-view frames to task-specific reward models."""
+
+    def __init__(self, checkpoint_root, task_routes, threshold=None):
+        super().__init__()
+        checkpoint_root = Path(checkpoint_root)
+        task_routes = dict(task_routes)
+        if not task_routes:
+            raise ValueError(
+                "InstructionRoutedGripperTintResnetRewModel requires "
+                "reward_model.task_routes"
+            )
+
+        self.models = torch.nn.ModuleDict()
+        self.routes = []
+        for model_idx, (route_name, route_value) in enumerate(task_routes.items()):
+            route_cfg = dict(route_value)
+            checkpoint_value = route_cfg.get("checkpoint")
+            if checkpoint_value is None:
+                raise ValueError(
+                    f"Reward-model route {route_name!r} is missing checkpoint"
+                )
+            checkpoint_path = Path(str(checkpoint_value))
+            if not checkpoint_path.is_absolute():
+                checkpoint_path = checkpoint_root / checkpoint_path
+            if not checkpoint_path.is_file():
+                raise FileNotFoundError(checkpoint_path)
+
+            keywords = route_cfg.get("keywords", [route_name])
+            if isinstance(keywords, str):
+                keywords = [keywords]
+            keywords = tuple(
+                str(keyword).strip().lower()
+                for keyword in keywords
+                if str(keyword).strip()
+            )
+            if not keywords:
+                raise ValueError(
+                    f"Reward-model route {route_name!r} has no non-empty keywords"
+                )
+
+            model_key = f"task_{model_idx}"
+            route_threshold = route_cfg.get("threshold", threshold)
+            self.models[model_key] = CompatibleResnetRewModel(
+                checkpoint_path=str(checkpoint_path),
+                threshold=route_threshold,
+            )
+            self.routes.append((str(route_name), model_key, keywords))
+
+    def _model_key_for_instruction(self, instruction):
+        normalized = str(instruction).strip().lower()
+        matches = [
+            (route_name, model_key)
+            for route_name, model_key, keywords in self.routes
+            if any(keyword in normalized for keyword in keywords)
+        ]
+        if len(matches) != 1:
+            route_summary = {
+                route_name: list(keywords)
+                for route_name, _, keywords in self.routes
+            }
+            raise ValueError(
+                "Expected exactly one gripper-tint reward route for instruction "
+                f"{instruction!r}, got {[name for name, _ in matches]}. "
+                f"Configured routes: {route_summary}"
+            )
+        return matches[0][1]
+
+    @torch.no_grad()
+    def predict_rew(self, obs, instructions=None):
+        if instructions is None or len(instructions) != obs.shape[0]:
+            raise ValueError(
+                "Instruction-routed gripper-tint reward inference expects one "
+                f"instruction per frame: frames={obs.shape[0]}, instructions="
+                f"{None if instructions is None else len(instructions)}"
+            )
+
+        grouped_indices = {}
+        for sample_idx, instruction in enumerate(instructions):
+            model_key = self._model_key_for_instruction(instruction)
+            grouped_indices.setdefault(model_key, []).append(sample_idx)
+
+        rewards = torch.empty(
+            obs.shape[0], device=obs.device, dtype=torch.float32
+        )
+        for model_key, sample_indices in grouped_indices.items():
+            indices = torch.as_tensor(
+                sample_indices, device=obs.device, dtype=torch.long
+            )
+            task_rewards = self.models[model_key].predict_rew(
+                obs.index_select(0, indices)
+            )
+            rewards.index_copy_(0, indices, task_rewards.reshape(-1))
+        return rewards
 
 
 class WanVideoUnit_TI2V2ContextEmbedder(PipelineUnit):
@@ -122,21 +293,105 @@ class WanmultiviewEnv(BaseWorldEnv):
         self._generator = torch.Generator()
         self._generator.manual_seed(self.seed)
 
+        self.reward_group_sampling = str(
+            cfg.get("reward_group_sampling", "episode_uniform")
+        ).strip().lower()
+        if self.reward_group_sampling not in {"episode_uniform", "balanced"}:
+            raise ValueError(
+                "reward_group_sampling must be 'episode_uniform' or 'balanced', "
+                f"got {self.reward_group_sampling!r}"
+            )
+        self._reward_group_sampling_round = 0
+        self.episode_reward_group_ids = None
+        self.episode_indices_by_reward_group = {}
+        self.reward_group_manifest_path = None
+        self._init_episode_reward_groups()
+        self.current_reward_group_ids = torch.full(
+            (self.num_envs,), -1, dtype=torch.long, device=self.device
+        )
+
         # Update reset state ids
         self.update_reset_state_ids()
 
         # Model hyperparameters
         self.num_inference_steps = cfg.num_inference_steps
-        self.chunk = int(cfg.get("wm_chunk", cfg.get("horizon_frames", 8)))  # Ta = 8
+        self.chunk = int(
+            cfg.get("wm_chunk", cfg.get("chunk", cfg.get("horizon_frames", 8)))
+        )  # Ta = 8
         self.condition_frame_length = int(
-            cfg.get("context_frames", cfg.get("dataset_context_frames", 5))
+            cfg.get(
+                "context_frames",
+                cfg.get("condition_frame_length", cfg.get("dataset_context_frames", 5)),
+            )
         )  # To = 5
         self.num_frames = int(
-            cfg.get("wm_num_frames", self.condition_frame_length + self.chunk)
+            cfg.get(
+                "wm_num_frames",
+                cfg.get("num_frames", self.condition_frame_length + self.chunk),
+            )
         )  # Total number of frames to encode = 13
         assert self.num_frames == self.condition_frame_length + self.chunk, (
             "num_frames must be equal to condition_frame_length + action_chunk_length"
         )
+        self.rollout_context_mode = self._normalize_rollout_context_mode(
+            cfg.get("rollout_context_mode", "dense_history")
+        )
+        self.rollout_sparse_history_stride = int(
+            cfg.get("rollout_sparse_history_stride", cfg.get("sparse_history_stride", 4))
+        )
+        if self.rollout_sparse_history_stride <= 0:
+            raise ValueError(
+                f"rollout_sparse_history_stride must be positive, got {self.rollout_sparse_history_stride}"
+            )
+        if (
+            self.rollout_context_mode == "sparse_history"
+            and self.condition_frame_length != 5
+        ):
+            raise ValueError("sparse_history rollout expects condition_frame_length=5")
+
+        task_rollout_cfg = cfg.get("task_specific_rollout", {})
+        self.task_specific_rollout_enabled = bool(
+            task_rollout_cfg.get("enabled", False)
+        )
+        self.task_specific_stop_on_success = bool(
+            task_rollout_cfg.get("stop_on_success", False)
+        )
+        self.task_horizon_by_instruction = {
+            str(instruction).strip(): int(max_steps)
+            for instruction, max_steps in dict(
+                task_rollout_cfg.get("horizon_by_instruction", {})
+            ).items()
+        }
+        if self.task_specific_rollout_enabled and not self.task_horizon_by_instruction:
+            raise ValueError(
+                "task_specific_rollout.enabled=true requires "
+                "task_specific_rollout.horizon_by_instruction"
+            )
+        if self.task_specific_rollout_enabled and self.auto_reset:
+            raise ValueError(
+                "task-specific padded rollout requires auto_reset=false so completed "
+                "environments remain inactive until the next rollout reset"
+            )
+        invalid_horizons = {
+            instruction: max_steps
+            for instruction, max_steps in self.task_horizon_by_instruction.items()
+            if max_steps <= 0 or max_steps % self.chunk != 0
+        }
+        if invalid_horizons:
+            raise ValueError(
+                "Task-specific horizons must be positive multiples of the WM chunk "
+                f"({self.chunk}), got {invalid_horizons}"
+            )
+        if (
+            self.task_specific_rollout_enabled
+            and max(self.task_horizon_by_instruction.values())
+            > int(cfg.max_episode_steps)
+        ):
+            raise ValueError(
+                "env.max_episode_steps must cover the longest task-specific horizon: "
+                f"global={cfg.max_episode_steps}, "
+                f"task_max={max(self.task_horizon_by_instruction.values())}"
+            )
 
         self.image_size = tuple(cfg.image_size)
 
@@ -150,6 +405,14 @@ class WanmultiviewEnv(BaseWorldEnv):
         self.kir_initial_frame = cfg.get("kir_initial_frame", None)
         if self.kir_initial_frame is not None:
             self.kir_initial_frame = int(self.kir_initial_frame)
+        self.initial_joint_source = str(
+            cfg.get("initial_joint_source", "action")
+        ).lower()
+        if self.initial_joint_source not in {"action", "state"}:
+            raise ValueError(
+                "initial_joint_source must be 'action' or 'state', got "
+                f"{self.initial_joint_source!r}"
+            )
         self.is_robotwin_env = cfg.get("wm_env_type", "robotwin") == "robotwin"
 
         self.camera_names = list(
@@ -165,7 +428,15 @@ class WanmultiviewEnv(BaseWorldEnv):
         self.view_width = int(cfg.get("view_width", self.image_size[1]))
         self.camera_original_height = int(cfg.get("camera_original_height", 480))
         self.camera_original_width = int(cfg.get("camera_original_width", 640))
-        self.prompt = cfg.get("prompt", "机械臂按照要求移动夹爪执行任务")
+        self.prompt = str(
+            cfg.get("prompt", "机械臂按照要求移动夹爪执行任务")
+        )
+        self.wm_prompt_mode = str(cfg.get("wm_prompt_mode", "fixed"))
+        if self.wm_prompt_mode not in {"fixed", "task_instruction"}:
+            raise ValueError(
+                f"Unsupported wm_prompt_mode={self.wm_prompt_mode}. "
+                "Expected fixed or task_instruction."
+            )
         self.traj_radius = int(cfg.get("traj_radius", 40))
         self.traj_radius_mode = cfg.get("traj_radius_mode", "perspective")
         self.traj_min_radius = int(cfg.get("traj_min_radius", 14))
@@ -173,6 +444,24 @@ class WanmultiviewEnv(BaseWorldEnv):
         self.traj_ref_depth = float(cfg.get("traj_ref_depth", 0.30))
         self.traj_near_depth = float(cfg.get("traj_near_depth", 0.19))
         self.traj_far_depth = float(cfg.get("traj_far_depth", 0.69))
+        self.traj_map_renderer = str(cfg.get("traj_map_renderer", "opaque"))
+        if self.traj_map_renderer not in {"opaque", "alpha"}:
+            raise ValueError(
+                f"Unsupported traj_map_renderer={self.traj_map_renderer}. "
+                "Expected opaque or alpha."
+            )
+        self.traj_circle_alpha = int(cfg.get("traj_circle_alpha", 160))
+        if not 0 <= self.traj_circle_alpha <= 255:
+            raise ValueError(
+                f"traj_circle_alpha must be in [0, 255], got {self.traj_circle_alpha}"
+            )
+        self.traj_local_x_offset = float(cfg.get("traj_local_x_offset", 0.2))
+        self.traj_axis_line_width = int(cfg.get("traj_axis_line_width", 8))
+        if self.traj_axis_line_width <= 0:
+            raise ValueError(
+                "traj_axis_line_width must be positive, got "
+                f"{self.traj_axis_line_width}"
+            )
         self.ray_o_vmin = float(cfg.get("ray_o_vmin", -1.5))
         self.ray_o_vmax = float(cfg.get("ray_o_vmax", 1.5))
         self.ray_d_vmin = float(cfg.get("ray_d_vmin", -1.0))
@@ -268,12 +557,26 @@ class WanmultiviewEnv(BaseWorldEnv):
         self.robotwin_camera_anchors = [None] * self.num_envs
         self.last_control_video = [[] for _ in range(self.num_envs)]
         self.last_control_video_chunks = []
+        self.active_env_mask = torch.ones(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self.env_elapsed_steps = torch.zeros(
+            self.num_envs, dtype=torch.long, device=self.device
+        )
+        self.env_episode_max_steps = torch.full(
+            (self.num_envs,),
+            int(self.cfg.max_episode_steps),
+            dtype=torch.long,
+            device=self.device,
+        )
 
         # Image queue for condition frames to generate video,
         # keep length of condition_frame_length
         self.image_queue = [
             [None] * self.condition_frame_length for _ in range(self.num_envs)
         ]
+        self.frame_history = [[] for _ in range(self.num_envs)]
+        self.action_history14 = [[] for _ in range(self.num_envs)]
 
         # Condition action to generate video,
         # keep length of condition_frame_length
@@ -298,6 +601,98 @@ class WanmultiviewEnv(BaseWorldEnv):
 
         self._is_offloaded = False
 
+    def _normalize_rollout_context_mode(self, mode):
+        mode = str(mode)
+        aliases = {
+            "contiguous": "dense_history",
+            "fixed_sparse_history": "sparse_history",
+        }
+        mode = aliases.get(mode, mode)
+        if mode not in {"dense_history", "sparse_history"}:
+            raise ValueError(
+                f"Unsupported rollout_context_mode={mode}. "
+                "Expected dense_history or sparse_history."
+            )
+        return mode
+
+    def _reset_task_specific_rollout_state(self, task_descriptions):
+        """Initialize per-environment horizons without changing the fixed batch shape."""
+        self.active_env_mask.fill_(True)
+        self.env_elapsed_steps.zero_()
+        self.env_episode_max_steps.fill_(int(self.cfg.max_episode_steps))
+        if not self.task_specific_rollout_enabled:
+            return
+
+        normalized_tasks = [str(task).strip() for task in task_descriptions]
+        missing = sorted(
+            set(normalized_tasks).difference(self.task_horizon_by_instruction)
+        )
+        if missing:
+            raise ValueError(
+                "No task-specific rollout horizon configured for instructions "
+                f"{missing}. Known instructions: "
+                f"{sorted(self.task_horizon_by_instruction)}"
+            )
+
+        self.env_episode_max_steps.copy_(
+            torch.tensor(
+                [
+                    self.task_horizon_by_instruction[task]
+                    for task in normalized_tasks
+                ],
+                dtype=torch.long,
+                device=self.device,
+            )
+        )
+
+    def _sparse_history_ids(self, env_idx):
+        history_len = len(self.frame_history[env_idx])
+        if history_len <= 0:
+            raise ValueError(f"Sparse frame history for env {env_idx} is empty")
+        last_idx = history_len - 1
+        stride = self.rollout_sparse_history_stride
+        return [
+            0,
+            max(0, last_idx - 3 * stride),
+            max(0, last_idx - 2 * stride),
+            max(0, last_idx - stride),
+            last_idx,
+        ]
+
+    def _sparse_history_context(self, env_idx):
+        frame_history = self.frame_history[env_idx]
+        action_history = self.action_history14[env_idx]
+        if not action_history:
+            reference_action = self.reference_action14[env_idx].detach().cpu().numpy()
+            action_history = [reference_action.astype(np.float32)]
+            self.action_history14[env_idx] = action_history
+
+        ids = self._sparse_history_ids(env_idx)
+        context_frames = [
+            frame_history[min(idx, len(frame_history) - 1)].clone() for idx in ids
+        ]
+        context_actions = [
+            np.asarray(action_history[min(idx, len(action_history) - 1)], dtype=np.float32).reshape(14)
+            for idx in ids
+        ]
+        return context_frames, np.stack(context_actions, axis=0)
+
+    def _append_sparse_history(self, env_idx, pred_video, actions_tensor):
+        if not self.frame_history[env_idx]:
+            reference_frame = self.reference_frames[env_idx]
+            if reference_frame is None:
+                raise ValueError(f"Missing reference frame for env {env_idx}")
+            self.frame_history[env_idx] = [reference_frame.clone()]
+
+        for t in range(pred_video.shape[1]):
+            self.frame_history[env_idx].append(pred_video[:, t : t + 1].detach().clone())
+
+        actions_np = actions_tensor.detach().cpu().numpy()
+        for t in range(min(actions_np.shape[0], pred_video.shape[1])):
+            self.action_history14[env_idx].append(
+                np.asarray(actions_np[t], dtype=np.float32).reshape(14).copy()
+            )
+
     def _build_dataset(self, cfg):
         return NpyTrajectoryDatasetWrapper(
             cfg.initial_image_path,
@@ -305,6 +700,73 @@ class WanmultiviewEnv(BaseWorldEnv):
             state_key=cfg.get("dataset_state_key", "state"),
             enable_kir=self.enable_kir,
         )
+
+    def _init_episode_reward_groups(self):
+        """Load reset-episode groups from either supported manifest layout."""
+        configured_manifest_path = self.cfg.get("reward_group_manifest_path", None)
+        manifest_path = (
+            Path(str(configured_manifest_path))
+            if configured_manifest_path
+            else Path(str(self.cfg.initial_image_path)) / "manifest.json"
+        )
+        self.reward_group_manifest_path = manifest_path
+        if not manifest_path.is_file():
+            if self.reward_group_sampling == "balanced":
+                raise FileNotFoundError(
+                    "Balanced reward-group sampling requires a manifest: "
+                    f"{manifest_path}"
+                )
+            return
+
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        mapping = manifest.get("episode_mapping") or manifest.get("episodes", [])
+        output_file_to_group = {}
+        for item in mapping:
+            output_file = Path(str(item.get("output_file", ""))).name
+            group_id = item.get(
+                "group_id",
+                item.get("reward_group_id", item.get("task_index")),
+            )
+            if not output_file or group_id is None:
+                continue
+            if output_file in output_file_to_group:
+                raise ValueError(
+                    f"Duplicate output_file {output_file!r} in {manifest_path}"
+                )
+            output_file_to_group[output_file] = int(group_id)
+
+        if not output_file_to_group:
+            if self.reward_group_sampling == "balanced":
+                raise ValueError(
+                    "Balanced reward-group sampling found no output_file/group ID "
+                    f"mapping in {manifest_path}"
+                )
+            return
+
+        episode_group_ids = []
+        missing_files = []
+        for npy_file in self.dataset.npy_files:
+            basename = Path(npy_file).name
+            if basename not in output_file_to_group:
+                missing_files.append(basename)
+                continue
+            episode_group_ids.append(output_file_to_group[basename])
+        if missing_files:
+            raise ValueError(
+                f"{manifest_path} is missing reward groups for {len(missing_files)} "
+                f"dataset files, including {missing_files[:8]}"
+            )
+
+        self.episode_reward_group_ids = np.asarray(
+            episode_group_ids, dtype=np.int64
+        )
+        for group_id in sorted(set(episode_group_ids)):
+            indices = np.flatnonzero(
+                self.episode_reward_group_ids == group_id
+            ).astype(np.int64)
+            self.episode_indices_by_reward_group[group_id] = torch.from_numpy(
+                indices
+            )
 
     def _load_robotwin_episode_source_paths(self, initial_image_path):
         manifest_path = Path(initial_image_path) / "manifest.json"
@@ -398,8 +860,13 @@ class WanmultiviewEnv(BaseWorldEnv):
             raw_frame = trajectory[int(frame_idx)]
             if not isinstance(raw_frame, dict) and hasattr(raw_frame, "item"):
                 raw_frame = raw_frame.item()
-            if "action" not in raw_frame:
-                raise ValueError(f"KIR frame {frame_idx} has no action in {file_path}")
+            joint_key = (
+                "action" if self.initial_joint_source == "action" else "state"
+            )
+            if joint_key not in raw_frame:
+                raise ValueError(
+                    f"KIR frame {frame_idx} has no {joint_key} in {file_path}"
+                )
 
             if self.is_robotwin_env:
                 image_tensor = self._read_robotwin_stacked_frame(source_path, int(frame_idx))
@@ -415,7 +882,7 @@ class WanmultiviewEnv(BaseWorldEnv):
                 else:
                     image_tensor = torch.as_tensor(image, dtype=torch.float32)
 
-            action = raw_frame["action"]
+            action = raw_frame[joint_key]
             if isinstance(action, torch.Tensor):
                 action_tensor = action.float()
             else:
@@ -674,6 +1141,37 @@ class WanmultiviewEnv(BaseWorldEnv):
         ray_d = torch.from_numpy(np.stack(ray_d_slots, axis=0)).permute(3, 0, 1, 2).float()
         return ray_o, ray_d
 
+    def _generate_traj_maps(self, abs_actions, w2c, intrinsic):
+        kwargs = {
+            "radius": self.traj_radius,
+            "radius_mode": self.traj_radius_mode,
+            "min_radius": self.traj_min_radius,
+            "max_radius": self.traj_max_radius,
+            "ref_depth": self.traj_ref_depth,
+            "near_depth": self.traj_near_depth,
+            "far_depth": self.traj_far_depth,
+        }
+        if self.traj_map_renderer == "alpha":
+            return generate_traj_map_alpha(
+                abs_actions,
+                w2c,
+                intrinsic,
+                self.view_height,
+                self.view_width,
+                circle_alpha=self.traj_circle_alpha,
+                local_x_offset=self.traj_local_x_offset,
+                axis_line_width=self.traj_axis_line_width,
+                **kwargs,
+            )
+        return generate_traj_map(
+            abs_actions,
+            w2c,
+            intrinsic,
+            self.view_height,
+            self.view_width,
+            **kwargs,
+        )
+
     def _build_arxx5_controls(self, action_seq):
         action_seq = self._pad_action_sequence(action_seq)
         ee_pose, state = self._action14_to_ee_pose_and_state(action_seq)
@@ -697,19 +1195,10 @@ class WanmultiviewEnv(BaseWorldEnv):
                 self.view_width,
             )
             raw_intrinsic_by_cam[cam] = k
-            control_per_cam[cam] = generate_traj_map(
+            control_per_cam[cam] = self._generate_traj_maps(
                 traj_actions_by_cam[cam],
                 traj_w2c_by_cam[cam],
                 k,
-                self.view_height,
-                self.view_width,
-                radius=self.traj_radius,
-                radius_mode=self.traj_radius_mode,
-                min_radius=self.traj_min_radius,
-                max_radius=self.traj_max_radius,
-                ref_depth=self.traj_ref_depth,
-                near_depth=self.traj_near_depth,
-                far_depth=self.traj_far_depth,
             )
 
             ray_o_seq = []
@@ -801,19 +1290,10 @@ class WanmultiviewEnv(BaseWorldEnv):
             w2c_seq = w2c_by_robotwin_cam[robotwin_cam]
             raw_intrinsic_by_cam[cam] = k
             raw_w2c_by_cam[cam] = w2c_seq
-            control_per_cam[cam] = generate_traj_map(
+            control_per_cam[cam] = self._generate_traj_maps(
                 abs_actions,
                 w2c_seq,
                 k,
-                self.view_height,
-                self.view_width,
-                radius=self.traj_radius,
-                radius_mode=self.traj_radius_mode,
-                min_radius=self.traj_min_radius,
-                max_radius=self.traj_max_radius,
-                ref_depth=self.traj_ref_depth,
-                near_depth=self.traj_near_depth,
-                far_depth=self.traj_far_depth,
             )
 
             ray_o_seq = []
@@ -873,6 +1353,23 @@ class WanmultiviewEnv(BaseWorldEnv):
                 checkpoint_path=self.cfg.reward_model.from_pretrained,
                 task_suite_name=self.cfg.task_suite_name,
             )
+        elif self.cfg.reward_model.type == "InstructionRoutedResnetRewModel":
+            rew_model = InstructionRoutedResnetRewModel(
+                checkpoint_root=self.cfg.reward_model.from_pretrained,
+                instruction_to_checkpoint=(
+                    self.cfg.reward_model.instruction_to_checkpoint
+                ),
+                threshold=self.cfg.reward_model.get("threshold", None),
+            )
+        elif (
+            self.cfg.reward_model.type
+            == "InstructionRoutedGripperTintResnetRewModel"
+        ):
+            rew_model = InstructionRoutedGripperTintResnetRewModel(
+                checkpoint_root=self.cfg.reward_model.from_pretrained,
+                task_routes=self.cfg.reward_model.task_routes,
+                threshold=self.cfg.reward_model.get("threshold", None),
+            )
         elif self.cfg.reward_model.type == "DummyRewardModel":
             # raise NotImplementedError(f'Not setting rew')
             class DummyRewardModel(torch.nn.Module):
@@ -927,13 +1424,20 @@ class WanmultiviewEnv(BaseWorldEnv):
             self.success_once = self.success_once | terminations_tensor
         episode_info["success_once"] = self.success_once.clone()
         episode_info["return"] = self.returns.clone()
-        episode_info["episode_len"] = torch.full(
-            (self.num_envs,),
-            self.elapsed_steps,
-            dtype=torch.float32,
-            device=self.device,
-        )
-        episode_info["reward"] = episode_info["return"] / episode_info["episode_len"]
+        if self.task_specific_rollout_enabled:
+            episode_info["episode_len"] = self.env_elapsed_steps.to(
+                dtype=torch.float32
+            ).clone()
+        else:
+            episode_info["episode_len"] = torch.full(
+                (self.num_envs,),
+                self.elapsed_steps,
+                dtype=torch.float32,
+                device=self.device,
+            )
+        episode_info["reward"] = episode_info["return"] / episode_info[
+            "episode_len"
+        ].clamp_min(1.0)
         infos["episode"] = episode_info
         return infos
 
@@ -986,16 +1490,44 @@ class WanmultiviewEnv(BaseWorldEnv):
 
     def update_reset_state_ids(self):
         """Updates the reset state IDs for environment initialization."""
-        # Get total number of episodes available
-        total_num_episodes = len(self.dataset)
-
-        # Generate random reset state ids
-        reset_state_ids = torch.randint(
-            low=0,
-            high=total_num_episodes,
-            size=(self.num_group,),
-            generator=self._generator,
-        )
+        if self.reward_group_sampling == "balanced":
+            if not self.episode_indices_by_reward_group:
+                raise ValueError(
+                    "Balanced reward-group sampling requires episode group metadata"
+                )
+            group_ids = sorted(self.episode_indices_by_reward_group)
+            worker_rank = int(
+                getattr(self.worker_info, "rank", 0)
+                if self.worker_info is not None
+                else 0
+            )
+            groups_per_round = self.total_num_processes * self.num_group
+            sampled_episode_ids = []
+            for local_group_idx in range(self.num_group):
+                global_group_slot = (
+                    self._reward_group_sampling_round * groups_per_round
+                    + worker_rank * self.num_group
+                    + local_group_idx
+                )
+                group_id = group_ids[global_group_slot % len(group_ids)]
+                candidates = self.episode_indices_by_reward_group[group_id]
+                candidate_idx = torch.randint(
+                    low=0,
+                    high=len(candidates),
+                    size=(1,),
+                    generator=self._generator,
+                ).item()
+                sampled_episode_ids.append(int(candidates[candidate_idx]))
+            reset_state_ids = torch.tensor(sampled_episode_ids, dtype=torch.long)
+            self._reward_group_sampling_round += 1
+        else:
+            total_num_episodes = len(self.dataset)
+            reset_state_ids = torch.randint(
+                low=0,
+                high=total_num_episodes,
+                size=(self.num_group,),
+                generator=self._generator,
+            )
         # 对每一组都得到一个随机的reset state id，范围是[0, total_num_episodes)，shape是[num_group]
         # 每个组里的环境共享同一个reset state id
         # Repeat for each environment in the group
@@ -1043,6 +1575,20 @@ class WanmultiviewEnv(BaseWorldEnv):
             # Convert to numpy if tensor
             if isinstance(episode_indices, torch.Tensor):
                 episode_indices = episode_indices.cpu().numpy()
+        episode_indices = np.asarray(episode_indices, dtype=np.int64).reshape(-1)
+        if episode_indices.shape[0] != num_envs:
+            raise ValueError(
+                f"Expected {num_envs} episode indices, got {episode_indices.shape[0]}"
+            )
+        if self.episode_reward_group_ids is not None:
+            selected_group_ids = self.episode_reward_group_ids[episode_indices]
+            self.current_reward_group_ids = torch.as_tensor(
+                selected_group_ids, dtype=torch.long, device=self.device
+            )
+        else:
+            self.current_reward_group_ids = torch.full(
+                (num_envs,), -1, dtype=torch.long, device=self.device
+            )
 
         # Load first frame from each selected episode
         img_tensors = []
@@ -1086,12 +1632,23 @@ class WanmultiviewEnv(BaseWorldEnv):
             else:
                 init_ee_poses.append(None)
 
-            init_state14 = None
-            if "action" in first_frame:
-                init_state14 = first_frame["action"]
-            elif "observation.state" in first_frame:
+            initial_joint_key = (
+                "action"
+                if self.initial_joint_source == "action"
+                else "observation.state"
+            )
+            init_state14 = first_frame.get(initial_joint_key)
+            if init_state14 is None and self.initial_joint_source == "state":
+                raise ValueError(
+                    f"No '{initial_joint_key}' key in frame for episode "
+                    f"{episode_idx}; initial_joint_source=state requires dataset state."
+                )
+            if (
+                init_state14 is None
+                and self.initial_joint_source == "action"
+                and "observation.state" in first_frame
+            ):
                 raise NotImplementedError("用action表示初始状态")
-                init_state14 = first_frame["observation.state"]
             if isinstance(init_state14, torch.Tensor):
                 init_state14 = init_state14.numpy()
             init_states14.append(init_state14)
@@ -1277,15 +1834,36 @@ class WanmultiviewEnv(BaseWorldEnv):
         for env_idx in range(num_envs):
             reference_frame = self.current_obs[env_idx, :, 0, 0:1, :, :].clone()
             self.reference_frames[env_idx] = reference_frame
+            context_action_np = (
+                condition_actions[env_idx].detach().cpu().numpy().astype(np.float32)
+            )
             if kir_context_enabled[env_idx]:
                 context_frames = self.current_obs[env_idx, :, 0, :, :, :].clone()
                 self.image_queue[env_idx] = [
                     context_frames[:, t : t + 1].clone()
                     for t in range(self.condition_frame_length)
                 ]
+                self.frame_history[env_idx] = [
+                    context_frames[:, t : t + 1].clone()
+                    for t in range(self.condition_frame_length)
+                ]
+                self.action_history14[env_idx] = [
+                    context_action_np[t].reshape(14).copy()
+                    for t in range(self.condition_frame_length)
+                ]
             else:
                 self.image_queue[env_idx] = [
                     reference_frame.clone() for _ in range(self.condition_frame_length)
+                ]
+                self.frame_history[env_idx] = [reference_frame.clone()]
+                self.action_history14[env_idx] = [
+                    self.reference_action14[env_idx]
+                    .detach()
+                    .cpu()
+                    .numpy()
+                    .astype(np.float32)
+                    .reshape(14)
+                    .copy()
                 ]
                 self.current_obs[env_idx, :, 0, :, :, :] = reference_frame.repeat(
                     1, self.condition_frame_length, 1, 1
@@ -1294,10 +1872,13 @@ class WanmultiviewEnv(BaseWorldEnv):
         # Store init_ee_poses
         self.task_descriptions = task_descriptions
         self.init_ee_poses = init_ee_poses
+        self._reset_task_specific_rollout_state(task_descriptions)
 
         # Wrap observation to match libero_env format
         extracted_obs = self._wrap_obs()
         infos = {}
+        if self.episode_reward_group_ids is not None:
+            infos["reward_group_id"] = self.current_reward_group_ids.clone()
 
         return extracted_obs, infos
 
@@ -1305,7 +1886,192 @@ class WanmultiviewEnv(BaseWorldEnv):
     def step(self, actions=None, auto_reset=True):
         raise NotImplementedError("step in Wan Env is not impl, use chunk_step instead")
 
-    def _infer_next_chunk_rewards(self):
+    @staticmethod
+    def _project_reward_point(point_xyz, extrinsic, intrinsic, height, width):
+        point = np.array(
+            [point_xyz[0], point_xyz[1], point_xyz[2], 1.0], dtype=np.float64
+        )
+        best = None
+        for mode, ext in (("as_is", extrinsic), ("inv", np.linalg.inv(extrinsic))):
+            point_camera = ext @ point
+            depth = float(point_camera[2])
+            if abs(depth) <= 1e-6:
+                continue
+            pixel = intrinsic @ point_camera[:3]
+            u = float(pixel[0] / pixel[2])
+            v = float(pixel[1] / pixel[2])
+            visible = depth > 1e-6 and 0 <= u < width and 0 <= v < height
+            clamped_u = float(np.clip(u, 0, width - 1))
+            clamped_v = float(np.clip(v, 0, height - 1))
+            candidate = {
+                "mode": mode,
+                "visible": visible,
+                "offscreen_dist": (u - clamped_u) ** 2 + (v - clamped_v) ** 2,
+                "center_dist": (u - width / 2) ** 2 + (v - height / 2) ** 2,
+            }
+            if visible:
+                return candidate
+            if best is None or (
+                candidate["offscreen_dist"], candidate["center_dist"]
+            ) < (best["offscreen_dist"], best["center_dist"]):
+                best = candidate
+        if best is not None:
+            return best
+        return {
+            "mode": "none",
+            "visible": False,
+            "offscreen_dist": float("inf"),
+            "center_dist": float("inf"),
+        }
+
+    def _select_gripper_tint_norms(self, actions):
+        if actions is None:
+            raise ValueError(
+                "Gripper-tint reward inference requires the actions aligned with "
+                "the generated chunk"
+            )
+        if not self.is_robotwin_env:
+            raise ValueError("Gripper-tint reward inference currently requires RoboTwin")
+        if self.robotwin_projector is None:
+            raise RuntimeError("RobotWin camera projector is not initialized")
+        if "head" not in self.camera_names:
+            raise ValueError(
+                f"Gripper-tint reward inference requires a head camera, got {self.camera_names}"
+            )
+
+        actions_tensor = (
+            torch.from_numpy(actions).to(self.device)
+            if isinstance(actions, np.ndarray)
+            else actions.to(self.device)
+        ).float()
+        if actions_tensor.shape != (self.num_envs, self.chunk, 14):
+            raise ValueError(
+                "Expected gripper-tint reward actions "
+                f"{(self.num_envs, self.chunk, 14)}, got {tuple(actions_tensor.shape)}"
+            )
+        actions_np = actions_tensor.detach().cpu().numpy()
+
+        head_view_idx = self.camera_names.index("head")
+        head_robotwin_cam = self.robotwin_camera_names[head_view_idx]
+        value_min = float(self.cfg.reward_model.get("gripper_value_min", 0.0))
+        value_max = float(self.cfg.reward_model.get("gripper_value_max", 1.0))
+        if value_max <= value_min:
+            raise ValueError(
+                f"gripper_value_max must exceed gripper_value_min, got {value_min}, {value_max}"
+            )
+
+        selected_norms = np.empty(
+            (self.num_envs, self.chunk), dtype=np.float32
+        )
+        for env_idx in range(self.num_envs):
+            anchor = self.robotwin_camera_anchors[env_idx]
+            if anchor is None:
+                raise RuntimeError(
+                    f"Missing RobotWin camera anchor for env {env_idx}"
+                )
+            action_seq = actions_np[env_idx]
+            ee_pose, _ = self._action14_to_ee_pose_and_state(action_seq)
+            left_pose = ee_pose[:, 0:7]
+            right_pose = ee_pose[:, 7:14]
+            w2c_seq = self.robotwin_projector.build_w2c_sequences(
+                anchor, left_pose, right_pose
+            )[head_robotwin_cam]
+            original_h, original_w = anchor.original_hw_by_cam[head_robotwin_cam]
+            intrinsic = robotwin_scale_intrinsic(
+                anchor.intrinsic_by_cam[head_robotwin_cam],
+                original_h,
+                original_w,
+                self.view_height,
+                self.view_width,
+            )
+
+            for frame_idx in range(self.chunk):
+                choices = []
+                for side, pose, action_col in (
+                    ("left", left_pose, 6),
+                    ("right", right_pose, 13),
+                ):
+                    projection = self._project_reward_point(
+                        pose[frame_idx, :3],
+                        w2c_seq[frame_idx],
+                        intrinsic,
+                        self.view_height,
+                        self.view_width,
+                    )
+                    value = float(action_seq[frame_idx, action_col])
+                    norm = float(
+                        np.clip(
+                            (value - value_min) / (value_max - value_min),
+                            0.0,
+                            1.0,
+                        )
+                    )
+                    choices.append({**projection, "side": side, "norm": norm})
+
+                visible = [choice for choice in choices if choice["visible"]]
+                if visible:
+                    selected = min(visible, key=lambda choice: choice["center_dist"])
+                else:
+                    selected = min(
+                        choices,
+                        key=lambda choice: (
+                            choice["offscreen_dist"], choice["center_dist"]
+                        ),
+                    )
+                selected_norms[env_idx, frame_idx] = selected["norm"]
+
+        return torch.from_numpy(selected_norms).to(
+            device=self.device, dtype=torch.float32
+        )
+
+    def _prepare_gripper_tint_reward_obs(self, stacked_obs, actions):
+        if self.cfg.reward_model.get("input_view", "head") != "head":
+            raise ValueError("Gripper-tint reward model currently supports input_view=head")
+        expected_frames = self.num_envs * self.chunk
+        if stacked_obs.shape[0] != expected_frames:
+            raise ValueError(
+                f"Expected {expected_frames} reward frames, got {stacked_obs.shape[0]}"
+            )
+
+        head_view_idx = self.camera_names.index("head")
+        head_start = head_view_idx * self.view_height
+        head_end = head_start + self.view_height
+        if stacked_obs.shape[-2] < head_end:
+            raise ValueError(
+                f"Stacked reward image height {stacked_obs.shape[-2]} is too small "
+                f"for head crop [{head_start}:{head_end}]"
+            )
+        head_obs = stacked_obs[:, :, head_start:head_end, :]
+        head_obs = head_obs.reshape(
+            self.num_envs, self.chunk, 3, self.view_height, self.view_width
+        )
+
+        gripper_norms = self._select_gripper_tint_norms(actions)
+        alpha = float(self.cfg.reward_model.get("tint_alpha", 0.42))
+        alpha = float(np.clip(alpha, 0.0, 1.0))
+        green = float(self.cfg.reward_model.get("tint_green", 35.0))
+        colors = torch.stack(
+            [
+                255.0 * gripper_norms,
+                torch.full_like(gripper_norms, green),
+                255.0 * (1.0 - gripper_norms),
+            ],
+            dim=-1,
+        )[:, :, :, None, None]
+
+        # Match the training pipeline: uint8 RGB -> alpha blend -> uint8 -> [-1, 1].
+        head_uint8 = torch.clamp((head_obs + 1.0) * 127.5, 0.0, 255.0).to(
+            torch.uint8
+        )
+        tinted_uint8 = (
+            head_uint8.to(torch.float32) * (1.0 - alpha) + colors * alpha
+        ).clamp(0.0, 255.0).to(torch.uint8)
+        tinted_obs = tinted_uint8.to(torch.float32) / 127.5 - 1.0
+        return tinted_obs.reshape(
+            expected_frames, 3, self.view_height, self.view_width
+        )
+
+    def _infer_next_chunk_rewards(self, actions=None):
         """Predict next reward using the reward model"""
         if self.reward_model is None:
             raise ValueError("Reward model is not loaded")
@@ -1316,7 +2082,11 @@ class WanmultiviewEnv(BaseWorldEnv):
             0, 3, 1, 2, 4, 5
         )  # [num_envs, chunk + condition_frame_length, 3, v, h, w]
 
-        if self.cfg.reward_model.type == "ResnetRewModel":
+        if self.cfg.reward_model.type in {
+            "ResnetRewModel",
+            "InstructionRoutedResnetRewModel",
+            "InstructionRoutedGripperTintResnetRewModel",
+        }:
             extract_chunk_obs = extract_chunk_obs[
                 :, -self.chunk :, :, :, :, :
             ]  # [num_envs, chunk, 3, v, h, w]
@@ -1328,7 +2098,28 @@ class WanmultiviewEnv(BaseWorldEnv):
             )  # [num_envs * chunk, 3, h, w]
             extract_chunk_obs = extract_chunk_obs.to(self.device)
 
-            rewards = self.reward_model.predict_rew(extract_chunk_obs)
+            if (
+                self.cfg.reward_model.type
+                == "InstructionRoutedGripperTintResnetRewModel"
+            ):
+                extract_chunk_obs = self._prepare_gripper_tint_reward_obs(
+                    extract_chunk_obs, actions
+                )
+
+            if self.cfg.reward_model.type in {
+                "InstructionRoutedResnetRewModel",
+                "InstructionRoutedGripperTintResnetRewModel",
+            }:
+                instructions = []
+                for env_idx in range(self.num_envs):
+                    instructions.extend(
+                        [self.task_descriptions[env_idx]] * self.chunk
+                    )
+                rewards = self.reward_model.predict_rew(
+                    extract_chunk_obs, instructions
+                )
+            else:
+                rewards = self.reward_model.predict_rew(extract_chunk_obs)
             rewards = rewards.reshape(self.num_envs, self.chunk)
         elif self.cfg.reward_model.type == "DummyRewardModel":
             print(f'ONLY FOR TEST')
@@ -1373,7 +2164,7 @@ class WanmultiviewEnv(BaseWorldEnv):
 
         return rewards
 
-    def _infer_next_chunk_frames(self, actions):
+    def _infer_next_chunk_frames(self, actions, active_env_mask=None):
         """Predict next frame chunk using the wan model"""
         num_envs = self.num_envs
         assert actions.shape[0] == self.num_envs, (
@@ -1387,6 +2178,19 @@ class WanmultiviewEnv(BaseWorldEnv):
         ).float()
         if actions_tensor.ndim != 3 or actions_tensor.shape[-1] != 14:
             raise ValueError(f"Expected actions [num_envs, chunk, 14], got {actions_tensor.shape}")
+        if active_env_mask is None:
+            active_env_mask = torch.ones(
+                num_envs, dtype=torch.bool, device=self.device
+            )
+        else:
+            active_env_mask = active_env_mask.to(
+                device=self.device, dtype=torch.bool
+            )
+            if active_env_mask.shape != (num_envs,):
+                raise ValueError(
+                    f"Expected active_env_mask [{num_envs}], got "
+                    f"{tuple(active_env_mask.shape)}"
+                )
 
         self.condition_action = self.condition_action.to(
             device=actions_tensor.device, dtype=actions_tensor.dtype
@@ -1410,7 +2214,23 @@ class WanmultiviewEnv(BaseWorldEnv):
         target_size = (self.view_width, self.view_height * len(self.camera_names))
 
         for env_idx in range(num_envs):
-            context_frames = self.image_queue[env_idx]
+            if not bool(active_env_mask[env_idx].item()):
+                padding_frame = self.current_obs[
+                    env_idx, :, 0, -1:, :, :
+                ].detach().cpu()
+                all_samples.append(padding_frame.repeat(1, self.chunk, 1, 1))
+                previous_control = (
+                    self.last_control_video[env_idx]
+                    if env_idx < len(self.last_control_video)
+                    else []
+                )
+                last_control_video.append(previous_control)
+                continue
+
+            if self.rollout_context_mode == "sparse_history":
+                context_frames, context_action_seq = self._sparse_history_context(env_idx)
+            else:
+                context_frames = self.image_queue[env_idx]
             # self.image_queue存首帧锚定的5帧上下文，如果没有就用当前obs的最后一帧复制填充
             if not context_frames or context_frames[0] is None:
                 raise ValueError(f"Image queue for env {env_idx} is empty or uninitialized")
@@ -1428,7 +2248,16 @@ class WanmultiviewEnv(BaseWorldEnv):
                 raise ValueError("context不足5")
                 input_video.insert(0, input_video[0])
 
-            action_seq = action_window[env_idx].detach().cpu().numpy()
+            if self.rollout_context_mode == "sparse_history":
+                action_seq = np.concatenate(
+                    [
+                        context_action_seq,
+                        actions_tensor[env_idx].detach().cpu().numpy(),
+                    ],
+                    axis=0,
+                )
+            else:
+                action_seq = action_window[env_idx].detach().cpu().numpy()
             action_seq = self._pad_action_sequence(action_seq)
             if self.is_robotwin_env:
                 control_video, ray_map_o, ray_map_d = self._build_robotwin_controls(
@@ -1442,10 +2271,13 @@ class WanmultiviewEnv(BaseWorldEnv):
                 self.condition_frame_length : self.condition_frame_length + self.chunk
             ]
             last_control_video.append(pred_control_video)
-            prompt = self.task_descriptions[env_idx] or self.prompt
+            if self.wm_prompt_mode == "fixed":
+                prompt = self.prompt
+            else:
+                prompt = self.task_descriptions[env_idx] or self.prompt
 
             kwargs = {
-                "prompt": prompt,
+                "prompt": "机械臂按照要求移动夹爪执行任务",
                 # "seed": int(self.cfg.get("seed", 0)) + int(self.elapsed_steps) + env_idx,
                 "seed": 0,
                 "tiled": self.tiled,
@@ -1484,38 +2316,48 @@ class WanmultiviewEnv(BaseWorldEnv):
                 raise NotImplementedError("没有锚定帧")
                 reference_frame = self.current_obs[env_idx, :, 0, 0:1, :, :].detach().cpu()
                 self.reference_frames[env_idx] = reference_frame
-            recent_count = max(0, self.condition_frame_length - 1) # 除去reference frame后还需要的context帧数
-            recent_start = max(0, pred_video.shape[1] - recent_count) # 从生成视频中取出最近的recent_count帧，如果生成的视频不足，就用reference frame填充
-            recent_frames = [
-                pred_video[:, t : t + 1] for t in range(recent_start, pred_video.shape[1])
-            ]
-            while len(recent_frames) < recent_count:
-                raise ValueError(f"生成的视频帧数 {pred_video.shape[1]} 不足以提供 {recent_count} 帧的context")
-                recent_frames.insert(0, reference_frame.clone())
-            self.image_queue[env_idx] = [
-                reference_frame.clone(),
-                *recent_frames[-recent_count:],
-            ][: self.condition_frame_length]
 
             all_samples.append(pred_video[:, -self.chunk :])
             self.current_action14[env_idx] = torch.from_numpy(action_seq[-1]).to(
                 device=self.current_action14.device, dtype=self.current_action14.dtype
             )
-            recent_actions = torch.from_numpy(
-                action_seq[-max(1, self.condition_frame_length - 1) :]
-            ).to(device=self.device, dtype=actions_tensor.dtype)
-            if self.condition_frame_length > 1:
-                self.condition_action[env_idx] = torch.cat(
-                    [
-                        self.reference_action14[env_idx : env_idx + 1].to(
-                            device=self.device, dtype=actions_tensor.dtype
-                        ),
-                        recent_actions[-(self.condition_frame_length - 1) :],
-                    ],
-                    dim=0,
+            if self.rollout_context_mode == "sparse_history":
+                self._append_sparse_history(
+                    env_idx, pred_video[:, -self.chunk :], actions_tensor[env_idx]
+                )
+                sparse_frames, sparse_actions = self._sparse_history_context(env_idx)
+                self.image_queue[env_idx] = sparse_frames
+                self.condition_action[env_idx] = torch.from_numpy(sparse_actions).to(
+                    device=self.device, dtype=actions_tensor.dtype
                 )
             else:
-                self.condition_action[env_idx] = self.current_action14[env_idx : env_idx + 1]
+                recent_count = max(0, self.condition_frame_length - 1) # 除去reference frame后还需要的context帧数
+                recent_start = max(0, pred_video.shape[1] - recent_count) # 从生成视频中取出最近的recent_count帧，如果生成的视频不足，就用reference frame填充
+                recent_frames = [
+                    pred_video[:, t : t + 1] for t in range(recent_start, pred_video.shape[1])
+                ]
+                while len(recent_frames) < recent_count:
+                    raise ValueError(f"生成的视频帧数 {pred_video.shape[1]} 不足以提供 {recent_count} 帧的context")
+                    recent_frames.insert(0, reference_frame.clone())
+                self.image_queue[env_idx] = [
+                    reference_frame.clone(),
+                    *recent_frames[-recent_count:],
+                ][: self.condition_frame_length]
+                recent_actions = torch.from_numpy(
+                    action_seq[-max(1, self.condition_frame_length - 1) :]
+                ).to(device=self.device, dtype=actions_tensor.dtype)
+                if self.condition_frame_length > 1:
+                    self.condition_action[env_idx] = torch.cat(
+                        [
+                            self.reference_action14[env_idx : env_idx + 1].to(
+                                device=self.device, dtype=actions_tensor.dtype
+                            ),
+                            recent_actions[-(self.condition_frame_length - 1) :],
+                        ],
+                        dim=0,
+                    )
+                else:
+                    self.condition_action[env_idx] = self.current_action14[env_idx : env_idx + 1]
 
         # Stack all environments: [num_envs, C, T, H, W]
         x_samples = torch.stack(all_samples, dim=0).to(self.device)
@@ -1690,11 +2532,30 @@ class WanmultiviewEnv(BaseWorldEnv):
             )
 
         reward_chunks = []
+        rm_reward_chunks = []
         termination_chunks = []
         truncation_chunks = []
         self.last_control_video_chunks = []
         extracted_obs = None
         num_rollout_chunks = action_chunk_len // self.chunk
+        task_specific_mode = self.task_specific_rollout_enabled
+        active_env_mask = (
+            self.active_env_mask.clone()
+            if task_specific_mode
+            else torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+        )
+        reward_group_ids_for_video = self.current_reward_group_ids.clone()
+        success_in_action_chunk = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        if task_specific_mode:
+            misaligned_horizons = self.env_episode_max_steps % action_chunk_len != 0
+            if misaligned_horizons.any():
+                bad = self.env_episode_max_steps[misaligned_horizons].tolist()
+                raise ValueError(
+                    "Task-specific horizons must align with the full VLA action chunk "
+                    f"({action_chunk_len}), got {bad}"
+                )
         # 这里计算VLA的action_chunk是wm的chunk的几倍
         for chunk_idx in range(num_rollout_chunks):
             start = chunk_idx * self.chunk
@@ -1702,7 +2563,10 @@ class WanmultiviewEnv(BaseWorldEnv):
             sub_actions = actions_tensor[:, start:end, :]
 
             with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
-                self._infer_next_chunk_frames(sub_actions)
+                self._infer_next_chunk_frames(
+                    sub_actions,
+                    active_env_mask=active_env_mask if task_specific_mode else None,
+                )
 
             # Update elapsed steps after each world-model autoregressive rollout.
             self.elapsed_steps += self.chunk 
@@ -1712,12 +2576,40 @@ class WanmultiviewEnv(BaseWorldEnv):
             extracted_obs = self._wrap_obs()
 
             # Get rewards for this generated world-model chunk.
-            chunk_rewards = self._infer_next_chunk_rewards()
+            if task_specific_mode and not active_env_mask.any():
+                chunk_rewards = torch.zeros(
+                    self.num_envs,
+                    self.chunk,
+                    dtype=torch.float32,
+                    device=self.device,
+                )
+            else:
+                chunk_rewards = self._infer_next_chunk_rewards(sub_actions)
             # import pdb;pdb.set_trace()
             # [B,T]-[1,8],是一个WM chunk的值
+            rm_chunk_rewards = chunk_rewards.clone()
+            if task_specific_mode:
+                rm_chunk_rewards = torch.where(
+                    active_env_mask[:, None],
+                    rm_chunk_rewards,
+                    torch.zeros_like(rm_chunk_rewards),
+                )
+            rm_reward_chunks.append(rm_chunk_rewards)
             chunk_rewards = self._apply_success_reward_latch(chunk_rewards)
+            if task_specific_mode:
+                chunk_rewards = torch.where(
+                    active_env_mask[:, None],
+                    chunk_rewards,
+                    torch.zeros_like(chunk_rewards),
+                )
 
             chunk_rewards_tensors = self._calc_step_reward(chunk_rewards)
+            if task_specific_mode:
+                chunk_rewards_tensors = torch.where(
+                    active_env_mask[:, None],
+                    chunk_rewards_tensors,
+                    torch.zeros_like(chunk_rewards_tensors),
+                )
             # 目前等价
             reward_chunks.append(chunk_rewards_tensors)
 
@@ -1727,21 +2619,42 @@ class WanmultiviewEnv(BaseWorldEnv):
             raw_chunk_terminations = torch.zeros(
                 self.num_envs, self.chunk, dtype=torch.bool, device=self.device
             )
-            raw_chunk_terminations[:, -1] = estimated_success
-            # 仅在每个sub-chunk的最后一步标记成功/终止，其他步骤不标记，即使reward已经超过阈值也继续执行后续动作，直到sub-chunk结束
             raw_chunk_truncations = torch.zeros(
                 self.num_envs, self.chunk, dtype=torch.bool, device=self.device
             )
-            truncations = torch.tensor(
-                self.elapsed_steps >= self.cfg.max_episode_steps, device=self.device
-            )
-            if truncations.any():
-                raw_chunk_truncations[:, -1] = truncations # 同样仅在sub-chunk的最后一步标记截断
+            if task_specific_mode:
+                success_in_action_chunk |= estimated_success & active_env_mask
+            else:
+                raw_chunk_terminations[:, -1] = estimated_success
+                # 仅在每个sub-chunk的最后一步标记成功/终止，其他步骤不标记，即使reward已经超过阈值也继续执行后续动作，直到sub-chunk结束
+                truncations = torch.tensor(
+                    self.elapsed_steps >= self.cfg.max_episode_steps,
+                    device=self.device,
+                )
+                if truncations.any():
+                    raw_chunk_truncations[:, -1] = truncations # 同样仅在sub-chunk的最后一步标记截断
 
             termination_chunks.append(raw_chunk_terminations)
             truncation_chunks.append(raw_chunk_truncations)
 
+        if task_specific_mode:
+            self.env_elapsed_steps[active_env_mask] += action_chunk_len
+            newly_terminated = (
+                success_in_action_chunk & active_env_mask
+                if self.task_specific_stop_on_success
+                else torch.zeros_like(active_env_mask)
+            )
+            newly_truncated = (
+                active_env_mask
+                & (self.env_elapsed_steps >= self.env_episode_max_steps)
+                & ~newly_terminated
+            )
+            termination_chunks[-1][:, -1] = newly_terminated
+            truncation_chunks[-1][:, -1] = newly_truncated
+            self.active_env_mask &= ~(newly_terminated | newly_truncated)
+
         chunk_rewards_tensors = torch.cat(reward_chunks, dim=1)
+        rm_rewards_tensors = torch.cat(rm_reward_chunks, dim=1)
         # 这个存每帧的奖励
         raw_chunk_terminations = torch.cat(termination_chunks, dim=1)
         # 这个可以表示每个WM-chunk是否成功
@@ -1770,6 +2683,13 @@ class WanmultiviewEnv(BaseWorldEnv):
         infos = self._record_metrics(
             chunk_rewards_tensors.sum(dim=1), past_terminations, infos
         )
+        infos["stage"] = reward_group_ids_for_video
+        infos["rm_reward"] = rm_rewards_tensors.max(dim=1).values
+        infos["train_reward"] = chunk_rewards_tensors.sum(dim=1)
+        success_threshold = float(
+            getattr(self.cfg, "success_reward_threshold", 0.9)
+        )
+        infos["rm_success"] = (rm_rewards_tensors >= success_threshold).any(dim=1)
         # info存的是每个VLA-chunk的平均奖励/是否成功
         chunk_terminations = raw_chunk_terminations
         chunk_truncations = raw_chunk_truncations
@@ -1802,7 +2722,11 @@ class WanmultiviewEnv(BaseWorldEnv):
         self.condition_action = self.condition_action.cpu()
         self.prev_step_reward = self.prev_step_reward.cpu()
         self.reward_success_latched = self.reward_success_latched.cpu()
+        self.active_env_mask = self.active_env_mask.cpu()
+        self.env_elapsed_steps = self.env_elapsed_steps.cpu()
+        self.env_episode_max_steps = self.env_episode_max_steps.cpu()
         self.reset_state_ids = self.reset_state_ids.cpu()
+        self.current_reward_group_ids = self.current_reward_group_ids.cpu()
         if self.record_metrics:
             self.success_once = self.success_once.cpu()
             self.returns = self.returns.cpu()
@@ -1821,7 +2745,11 @@ class WanmultiviewEnv(BaseWorldEnv):
         self.condition_action = self.condition_action.to(self.device)
         self.prev_step_reward = self.prev_step_reward.to(self.device)
         self.reward_success_latched = self.reward_success_latched.to(self.device)
+        self.active_env_mask = self.active_env_mask.to(self.device)
+        self.env_elapsed_steps = self.env_elapsed_steps.to(self.device)
+        self.env_episode_max_steps = self.env_episode_max_steps.to(self.device)
         self.reset_state_ids = self.reset_state_ids.to(self.device)
+        self.current_reward_group_ids = self.current_reward_group_ids.to(self.device)
         if self.record_metrics:
             self.success_once = self.success_once.to(self.device)
             self.returns = self.returns.to(self.device)
@@ -1838,10 +2766,15 @@ class WanmultiviewEnv(BaseWorldEnv):
             "current_action14": self.current_action14.cpu(),
             "condition_action": self.condition_action.cpu(),
             "elapsed_steps": self.elapsed_steps,
+            "active_env_mask": self.active_env_mask.cpu(),
+            "env_elapsed_steps": self.env_elapsed_steps.cpu(),
+            "env_episode_max_steps": self.env_episode_max_steps.cpu(),
             "prev_step_reward": self.prev_step_reward.cpu(),
             "reward_success_latched": self.reward_success_latched.cpu(),
             "_is_start": self._is_start,
             "reset_state_ids": self.reset_state_ids.cpu(),
+            "current_reward_group_ids": self.current_reward_group_ids.cpu(),
+            "reward_group_sampling_round": self._reward_group_sampling_round,
             "generator_state": self._generator.get_state(),
         }
         if self.record_metrics:
@@ -1857,7 +2790,7 @@ class WanmultiviewEnv(BaseWorldEnv):
         return buffer.getvalue()
 
 
-# export PYTHONPATH=/data/zsq/diffsynth-studio-wujie-ppu:/data/zsq/RLinf:$PYTHONPATH python -m rlinf.envs.world_model.world_model_wan_multi_view_env
+# export PYTHONPATH=/data/zsq/diffsynth-studio-wujie-ppu:/data/zsq/RLinf_A100:$PYTHONPATH python -m rlinf.envs.world_model.world_model_wan_multi_view_env
 if __name__ == "__main__":
     import json
     from pathlib import Path
@@ -1881,7 +2814,7 @@ if __name__ == "__main__":
         os.environ.get("EMBODIED_CONFIG_DIR", repo_root / "examples/embodiment/config")
     ).resolve()
     config_name = os.environ.get(
-        "EMBODIED_CONFIG_NAME", "wanmultiview_arxx5_newstructure_grpo_pi05"
+        "EMBODIED_CONFIG_NAME", "wanmultiview_arxx5_newstructure_new_cam_packphone_0809_whole_task_grpo_pi05"
     )
 
     print(f"Loading config: {config_name} from {config_dir}")
@@ -1896,7 +2829,7 @@ if __name__ == "__main__":
     rollout_output_dir = Path(
         os.environ.get(
             "WM_ROLLOUT_OUTPUT_DIR",
-            "/data/zsq/RLinf/outputs/wanmultiview_rollout",
+            "/data/zsq/RLinf_A100/outputs/wanmultiview_rollout",
         )
     )
     rollout_fps = int(os.environ.get("WM_ROLLOUT_FPS", "30"))
@@ -1923,13 +2856,20 @@ if __name__ == "__main__":
         )
 
     trajectory = np.load(env.dataset.npy_files[rollout_episode_index], allow_pickle=True)
-    actions = np.asarray(
-        [
-            frame.get("action", frame.get("state"))
-            for frame in trajectory
-        ],
-        dtype=np.float32,
-    )
+    rollout_action_key = str(cfg.get("dataset_action_key", "action"))
+    rollout_action_values = []
+    for frame_idx, frame in enumerate(trajectory):
+        if rollout_action_key in frame:
+            rollout_action_values.append(frame[rollout_action_key])
+        elif rollout_action_key == "action" and "state" in frame:
+            # Preserve the legacy main-path fallback for older NPY datasets.
+            rollout_action_values.append(frame["state"])
+        else:
+            raise KeyError(
+                f"Frame {frame_idx} has no rollout action key "
+                f"{rollout_action_key!r}; available keys={sorted(frame.keys())}"
+            )
+    actions = np.asarray(rollout_action_values, dtype=np.float32)
     if actions.ndim != 2 or actions.shape[1] != 14:
         raise ValueError(f"Expected episode actions [T, 14], got {actions.shape}")
 
@@ -2013,28 +2953,29 @@ if __name__ == "__main__":
     rewards = [0.0]
     output_frame_indices = [initial_frame_idx]
 
-    num_chunks = int(np.ceil(len(rollout_actions) / cfg.chunk))
+    num_chunks = int(np.ceil(len(rollout_actions) / env.chunk))
     print(
         f"Rolling out episode={rollout_episode_index}, "
         f"kir={bool(env.enable_kir and env.kir_initial_frame is not None)}, "
         f"initial_frame={initial_frame_idx}, action_start_frame={rollout_start_frame}, "
-        f"steps={len(rollout_actions)}, chunks={num_chunks}, dataset={rollout_dataset_dir}"
+        f"steps={len(rollout_actions)}, chunks={num_chunks}, "
+        f"action_key={rollout_action_key}, dataset={rollout_dataset_dir}"
     )
 
     for chunk_idx in range(num_chunks):
-        start = chunk_idx * cfg.chunk #  0, 8, 16, ...
-        end = min(start + cfg.chunk, len(rollout_actions)) # 8, 16, ..., len(rollout_actions)
+        start = chunk_idx * env.chunk #  0, 8, 16, ...
+        end = min(start + env.chunk, len(rollout_actions)) # 8, 16, ..., len(rollout_actions)
         chunk = rollout_actions[start:end]
         chunk_frame_indices = rollout_frame_indices[start:end]
         valid_len = len(chunk)
-        if valid_len < cfg.chunk:
-            pad = np.repeat(chunk[-1:], cfg.chunk - valid_len, axis=0)
+        if valid_len < env.chunk:
+            pad = np.repeat(chunk[-1:], env.chunk - valid_len, axis=0)
             chunk = np.concatenate([chunk, pad], axis=0) # [8, 14]
 
         _, chunk_rewards, _, _, _ = env.chunk_step(chunk[None, :, :]) # 输入[1, chunk, 14] 输出[1, chunk]
         chunk_reward_np = chunk_rewards[0, :valid_len].detach().cpu().numpy()
         chunk_frames = tensor_frames_to_uint8(
-            env.current_obs[0, :, 0, -cfg.chunk:, :, :]
+            env.current_obs[0, :, 0, -env.chunk:, :, :]
         )[:valid_len]
         chunk_traj_frames = env.last_control_video[0][:valid_len]
         generated_frames.extend(list(chunk_frames))

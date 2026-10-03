@@ -21,7 +21,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as transforms
-from diffsynth.models.reward_model import ResnetRewModel, TaskEmbedResnetRewModel
+# from diffsynth.models.reward_model import ResnetRewModel, TaskEmbedResnetRewModel
+from diffsynth.models.reward_model import ResnetRewModel
 from diffsynth.pipelines.wan_video_new import ModelConfig, WanVideoPipeline
 from PIL import Image
 

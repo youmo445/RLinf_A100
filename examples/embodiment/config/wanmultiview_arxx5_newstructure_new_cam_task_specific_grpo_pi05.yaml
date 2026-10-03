@@ -1,0 +1,416 @@
+defaults:
+  - model/pi0_5@actor.model
+  - training_backend/fsdp@actor.fsdp_config
+  - weight_syncer/patch_syncer@weight_syncer
+  - override hydra/job_logging: stdout
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  searchpath:
+    - file://${oc.env:EMBODIED_PATH}/config/
+
+cluster:
+  num_nodes: 1
+  component_placement:
+    actor,env,rollout: all
+
+runner:
+  task_type: embodied
+  logger:
+    log_path: "../results"
+    project_name: rlinf
+    experiment_name: "wan_multiview_newstructure_newcam_task_specific_grpo_openpi_pi05"
+    logger_backends: ["tensorboard"] # wandb, swanlab
+
+  max_epochs: 1000
+  max_steps: -1
+
+  only_eval: False
+  val_check_interval: -1
+  save_interval: 10
+
+  resume_dir: null # Optional: path to a saved checkpoint directory, such as 'checkpoints/global_step_10'. If not None, it will be used to resume training.
+  ckpt_path: null  # Optional: path to a .pt checkpoint. If not None, it will be loaded after the model is instantiated (for evaluation).
+
+algorithm:
+  normalize_advantages: True
+  kl_penalty: kl  # how to estimate kl divergence: kl or kl_penalty
+  group_size: 8
+  reward_coef: 1.0
+
+  rollout_epoch: 8
+  eval_rollout_epoch: 1 # set eval_rollout_epoch > 0 when enable runner.only_eval or runner.val_check_interval > 0
+
+  reward_type: chunk_level
+  logprob_type: chunk_level
+  entropy_type: token_level
+  update_epoch: 1
+
+  adv_type: grpo
+  loss_type: actor
+  loss_agg_func: "token-mean" 
+  kl_beta: 0.0
+  entropy_bonus: 0
+  clip_ratio_high: 0.2
+  clip_ratio_low: 0.2
+  clip_ratio_c: 3.0
+  value_clip: 0.2
+  huber_delta: 10.0
+
+  gamma: 0.99
+  gae_lambda: 0.95
+
+  filter_rewards: True
+  rewards_lower_bound: 0.1
+  rewards_upper_bound: 0.9
+  # params for generation
+  sampling_params:
+    do_sample: True
+    temperature_train: 1.0
+    temperature_eval: 0.6
+    top_k: 50
+    top_p: 1.0
+    repetition_penalty: 1.0
+    add_BOS: False
+
+  # length argument for autoregressive sampling
+  # max length means max amount of tokens to generate
+  length_params:
+    max_new_token: null
+    max_length: 1024
+    min_length: 1
+
+env:
+  group_name: "EnvGroup"
+
+  train:
+    seed: 0
+    env_type: wan_multiview_wm
+    total_num_envs: 64
+    group_size: ${algorithm.group_size}
+    use_fixed_reset_state_ids: True
+    use_ordered_reset_state_ids: false
+    reward_group_sampling: balanced
+    auto_reset: false
+    ignore_terminations: false
+    use_rel_reward: true
+    latch_success_reward: true
+    success_reward_threshold: 0.9
+    # The outer rollout remains fixed at the longest task horizon. Environments
+    # that finish earlier are padded and excluded by the existing done mask.
+    max_episode_steps: 448
+    max_steps_per_rollout_epoch: 448
+    reward_coef: 1.0
+
+    task_specific_rollout:
+      enabled: true
+      stop_on_success: true
+      horizon_by_instruction:
+        "Fold the towel.": 448
+        "Insert the flowers into the vase.": 160
+        "Move the test tubes from the yellow rack to the white rack.": 176
+        "Press the blue button.": 80
+        "Stack the three paper cups together.": 208
+        "Straighten the bottle that has fallen over on the table.": 224
+
+    wm_env_type: arxx5_newcam
+    reset_gripper_open: false
+    enable_offload: false
+    enable_kir: false
+    kir_initial_frame: 250
+    retain_action: true
+    action_dim: 14
+
+    video_cfg:
+      save_video: True
+      info_on_video: True
+      extra_info_on_video: [stage, rm_reward, train_reward, rm_success]
+      fps: 1
+      video_base_dir: /data/zsq/RLinf/videos
+
+    initial_image_path: /data/zsq/RLinf_A100/examples/embodiment/config/test_data/wanmultiview_arxx5_newcam_acwm_6tasks_0717_0720_0728_all729
+    reward_group_manifest_path: /data/zsq/RLinf_A100/examples/embodiment/config/test_data/wanmultiview_arxx5_newcam_acwm_6tasks_0717_0720_0728_all729/manifest.json
+    # This dataset stores EEF poses in `action`; the WM action map was trained
+    # from 14-D joint/gripper values in `observation.state`.
+    dataset_action_key: state
+    dataset_state_key: state
+    initial_joint_source: state
+
+    num_inference_steps: 5
+    chunk: 8
+    condition_frame_length: 5
+    num_frames: 13
+    rollout_context_mode: sparse_history
+    rollout_sparse_history_stride: 4
+    image_size: [672,224]
+
+    base_model_path:
+      - /data/zsq/Wan_model/diffusion_pytorch_model-00001-of-00003.safetensors
+      - /data/zsq/Wan_model/diffusion_pytorch_model-00002-of-00003.safetensors
+      - /data/zsq/Wan_model/diffusion_pytorch_model-00003-of-00003.safetensors
+    VAE_path: /data/zsq/Wan_model/Wan2.2_VAE.pth
+    T5_path: /data/zsq/Wan_model/models_t5_umt5-xxl-enc-bf16.pth
+    vace_model_path: /data/zsq/diffsynth-studio-wujie-ppu/outputs/6tasks0730/epoch-119.safetensors
+    vace_in_dim: 72
+    raymap_mode: raw_stack4
+    vace_view_embedding_num_views: 3
+    vae_spatial_downsample: 16
+    vae_temporal_downsample: 4
+
+    prompt: "机械臂按照要求移动夹爪执行任务"
+    wm_prompt_mode: fixed
+    cfg_scale: 1.0
+    tiled: false
+
+    camera_names: [head, left_wrist, right_wrist]
+    camera_axis_mode: identity
+    view_height: 224
+    view_width: 224
+    camera_original_height: 480
+    camera_original_width: 640
+
+    head_left_calib: /data/zsq/diffsynth-studio-wujie-ppu/diffsynth/trainers/assets/arxx5_new_head_left_eye_to_hand.json
+    head_right_calib: /data/zsq/diffsynth-studio-wujie-ppu/diffsynth/trainers/assets/arxx5_new_head_right_eye_to_hand.json
+    left_calib: /data/zsq/outputs/calib_eye_in_hand_left/result_eye_in_hand.json
+    right_calib: /data/zsq/outputs/calib_eye_in_hand_right/result_eye_in_hand.json
+
+    left_fk_fn: diffsynth.trainers.arxx5_urdf_fk.left_fk
+    right_fk_fn: diffsynth.trainers.arxx5_urdf_fk.right_fk
+    fk_urdf_path: /data/zsq/diffsynth-studio-wujie-ppu/diffsynth/trainers/assets/x5.urdf
+    fk_offset_path: /data/zsq/diffsynth-studio-wujie-ppu/diffsynth/trainers/assets/arxx5_fk_offsets.json
+    fk_base_link: base_link
+    fk_tip_link: link6
+    # Match the PPU x145 training convention: raw link6 FK plus a local +x
+    # 0.145 m projection offset, without the legacy FK base-frame offset.
+    fk_offset_mode: none
+    fk_state_unit: rad
+    fk_pose_quat_order: qwxyz
+
+    traj_radius: 40
+    traj_radius_mode: perspective
+    traj_min_radius: 14
+    traj_max_radius: 58
+    traj_ref_depth: 0.30
+    traj_near_depth: 0.19
+    traj_far_depth: 0.69
+    traj_map_renderer: alpha
+    traj_circle_alpha: 160
+    traj_local_x_offset: 0.145
+    traj_axis_line_width: 4
+    ray_o_vmin: -1.5
+    ray_o_vmax: 1.5
+    ray_d_vmin: -1.0
+    ray_d_vmax: 1.0
+
+    task_suite_name: arxx5_newcam
+    reward_model:
+      type: InstructionRoutedResnetRewModel
+      from_pretrained: /data/zsq/Reward_model/acwm_6tasks_0717_0720_0728_threeview_hdf5_continue
+      threshold: null  # null means use threshold saved in best.pth
+      instruction_to_checkpoint:
+        "Fold the towel.": task_0_fold_towel/best.pth
+        "Insert the flowers into the vase.": task_1_insert_flowers_into_vase/best.pth
+        "Move the test tubes from the yellow rack to the white rack.": task_2_move_test_tubes_yellow_to_white_rack/best.pth
+        "Press the blue button.": task_3_press_blue_button/best.pth
+        "Stack the three paper cups together.": task_4_stack_three_paper_cups/best.pth
+        "Straighten the bottle that has fallen over on the table.": task_5_straighten_fallen_bottle/best.pth
+  eval:
+    env_type: wan_multiview_wm
+    total_num_envs: 64
+    group_size: 1
+    use_fixed_reset_state_ids: True
+    use_ordered_reset_state_ids: true
+    reward_group_sampling: balanced
+    auto_reset: false
+    ignore_terminations: false
+    use_rel_reward: false
+    latch_success_reward: true
+    success_reward_threshold: 0.9
+    max_episode_steps: 448
+    max_steps_per_rollout_epoch: 448
+    reward_coef: 1.0
+    is_eval: True
+
+    task_specific_rollout:
+      enabled: true
+      stop_on_success: true
+      horizon_by_instruction:
+        "Fold the towel.": 448
+        "Insert the flowers into the vase.": 160
+        "Move the test tubes from the yellow rack to the white rack.": 176
+        "Press the blue button.": 80
+        "Stack the three paper cups together.": 208
+        "Straighten the bottle that has fallen over on the table.": 224
+
+    wm_env_type: arxx5_newcam
+    reset_gripper_open: false
+    enable_offload: false
+    enable_kir: false
+    kir_initial_frame: 250
+    retain_action: true
+    action_dim: 14
+
+    video_cfg:
+      save_video: True
+      info_on_video: true
+      extra_info_on_video: [stage, rm_reward, train_reward, rm_success]
+      fps: 15
+      video_base_dir: ${runner.logger.log_path}/video/eval_robotwin_grpo_pi05
+
+    initial_image_path: /data/zsq/RLinf_A100/examples/embodiment/config/test_data/wanmultiview_arxx5_newcam_acwm_6tasks_0717_0720_0728_all729
+    reward_group_manifest_path: /data/zsq/RLinf_A100/examples/embodiment/config/test_data/wanmultiview_arxx5_newcam_acwm_6tasks_0717_0720_0728_all729/manifest.json
+    # Keep evaluation reset/action-map semantics identical to training.
+    dataset_action_key: state
+    dataset_state_key: state
+    initial_joint_source: state
+
+    num_inference_steps: 5
+    chunk: 8
+    condition_frame_length: 5
+    num_frames: 13
+    rollout_context_mode: sparse_history
+    rollout_sparse_history_stride: 4
+    image_size: [672, 224]
+
+    base_model_path:
+      - /data/zsq/Wan_model/diffusion_pytorch_model-00001-of-00003.safetensors
+      - /data/zsq/Wan_model/diffusion_pytorch_model-00002-of-00003.safetensors
+      - /data/zsq/Wan_model/diffusion_pytorch_model-00003-of-00003.safetensors
+    VAE_path: /data/zsq/Wan_model/Wan2.2_VAE.pth
+    T5_path: /data/zsq/Wan_model/models_t5_umt5-xxl-enc-bf16.pth
+    vace_model_path: /data/zsq/diffsynth-studio-wujie-ppu/outputs/6tasks0730/epoch-119.safetensors
+    vace_in_dim: 72
+    raymap_mode: raw_stack4
+    vace_view_embedding_num_views: 3
+    vae_spatial_downsample: 16
+    vae_temporal_downsample: 4
+
+    prompt: "机械臂按照要求移动夹爪执行任务"
+    wm_prompt_mode: fixed
+    cfg_scale: 1.0
+    tiled: false
+
+    camera_names: [head, left_wrist, right_wrist]
+    camera_axis_mode: identity
+    view_height: 224
+    view_width: 224
+    camera_original_height: 480
+    camera_original_width: 640
+
+    head_left_calib: /data/zsq/diffsynth-studio-wujie-ppu/diffsynth/trainers/assets/arxx5_new_head_left_eye_to_hand.json
+    head_right_calib: /data/zsq/diffsynth-studio-wujie-ppu/diffsynth/trainers/assets/arxx5_new_head_right_eye_to_hand.json
+    left_calib: /data/zsq/outputs/calib_eye_in_hand_left/result_eye_in_hand.json
+    right_calib: /data/zsq/outputs/calib_eye_in_hand_right/result_eye_in_hand.json
+
+    left_fk_fn: diffsynth.trainers.arxx5_urdf_fk.left_fk
+    right_fk_fn: diffsynth.trainers.arxx5_urdf_fk.right_fk
+    fk_urdf_path: /data/zsq/diffsynth-studio-wujie-ppu/diffsynth/trainers/assets/x5.urdf
+    fk_offset_path: /data/zsq/diffsynth-studio-wujie-ppu/diffsynth/trainers/assets/arxx5_fk_offsets.json
+    fk_base_link: base_link
+    fk_tip_link: link6
+    fk_offset_mode: none
+    fk_state_unit: rad
+    fk_pose_quat_order: qwxyz
+
+    traj_radius: 40
+    traj_radius_mode: perspective
+    traj_min_radius: 14
+    traj_max_radius: 58
+    traj_ref_depth: 0.30
+    traj_near_depth: 0.19
+    traj_far_depth: 0.69
+    traj_map_renderer: alpha
+    traj_circle_alpha: 160
+    traj_local_x_offset: 0.145
+    traj_axis_line_width: 4
+    ray_o_vmin: -1.5
+    ray_o_vmax: 1.5
+    ray_d_vmin: -1.0
+    ray_d_vmax: 1.0
+
+    task_suite_name: arxx5_newcam
+    reward_model:
+      type: InstructionRoutedResnetRewModel
+      from_pretrained: /data/zsq/Reward_model/0714_arxx5_6tasks
+      threshold: null  # null means use threshold saved in best.pth
+      instruction_to_checkpoint:
+        "Fold the towel.": task_0_fold_towel/best.pth
+        "Insert the flowers into the vase.": task_1_insert_flowers_into_vase/best.pth
+        "Move the test tubes from the yellow rack to the white rack.": task_2_move_test_tubes_yellow_to_white_rack/best.pth
+        "Press the blue button.": task_3_press_blue_button/best.pth
+        "Stack the three paper cups together.": task_4_stack_three_paper_cups/best.pth
+        "Straighten the bottle that has fallen over on the table.": task_5_straighten_fallen_bottle/best.pth
+
+rollout:
+  group_name: "RolloutGroup"
+  generation_backend: "huggingface"
+  recompute_logprobs: False
+  unnorm_key: # TODO
+  enable_offload: False
+  pipeline_stage_num: 1
+
+  model:
+    model_path: /data/zsq/openpi/checkpoints/pi05_new_6tasks/12000torch
+    precision: ${actor.model.precision}
+
+actor:
+  group_name: "ActorGroup"
+  training_backend: "fsdp"
+  micro_batch_size: 32
+  global_batch_size: 1792 # 512 trajectories * 28 chunks / 8 optimizer steps.
+  seed: 42
+  enable_offload: False
+
+  # Override the default values in model/pi0_5
+  # Override the default values in model/pi0_5
+  model:
+    model_path: /data/zsq/openpi/checkpoints/pi05_new_6tasks/12000torch
+    model_type: "openpi"
+    num_action_chunks: 16 # interface for the env
+    action_dim: 14
+    num_steps: 5
+    # add_value_head: True
+    use_proprio: True
+    openpi_data:
+      adapt_to_pi: False
+      extra_delta_transform: False
+    # openpi specific parameters
+    openpi:
+      config_name: pi05_arxx5_newcam
+      num_images_in_input: 3
+      action_chunk: ${actor.model.num_action_chunks}
+      action_env_dim: ${actor.model.action_dim}
+      num_steps: ${actor.model.num_steps}
+      noise_method: "flow_sde"
+      noise_level: 0.2
+      sde_chunkwise_noise: true
+      # value_after_vlm: True
+      # detach_critic_input: True
+
+  optim:
+    lr: 5.0e-6
+    value_lr: 1.0e-4
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_eps: 1.0e-08
+    weight_decay: 0.01
+    clip_grad: 1.0
+    critic_warmup_steps: 0
+
+  # Override the default values in training_backend/fsdp
+  fsdp_config:
+    strategy: "fsdp"
+    sharding_strategy: "full_shard"
+    gradient_checkpointing: False # for openpi, gradient checkpointing is not supported, please do not change this value
+    mixed_precision:
+      param_dtype: ${actor.model.precision}
+      reduce_dtype: ${actor.model.precision}
+      buffer_dtype: ${actor.model.precision}
+
+reward:
+  use_reward_model: False
+
+critic:
+  use_critic_model: False

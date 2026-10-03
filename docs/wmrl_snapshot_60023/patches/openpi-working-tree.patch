@@ -1,0 +1,145 @@
+diff --git a/src/openpi/training/config.py b/src/openpi/training/config.py
+index 4ca47e1..c980f7d 100644
+--- a/src/openpi/training/config.py
++++ b/src/openpi/training/config.py
+@@ -278,6 +278,48 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
+         )
+ 
+ 
++@dataclasses.dataclass(frozen=True)
++class LeRobotACWMDataConfig(DataConfigFactory):
++    action_sequence_keys: Sequence[str] = ("action",)
++
++    @override
++    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
++        repack_transform = _transforms.Group(
++            inputs=[
++                _transforms.RepackTransform(
++                    {
++                        "images": {
++                            "cam_high": "observation.images.base_0",
++                            "cam_left_wrist": "observation.images.left_wrist_0",
++                            "cam_right_wrist": "observation.images.right_wrist_0",
++                        },
++                        "state": "observation.state",
++                        "actions": "action",
++                        "prompt": "prompt",
++                    }
++                )
++            ]
++        )
++
++        data_transforms = _transforms.Group(
++            inputs=[
++                aloha_policy.AlohaInputs(adapt_to_pi=False),
++                _transforms.DirectResizeImages(224, 224),
++            ],
++            outputs=[aloha_policy.AlohaOutputs(adapt_to_pi=False)],
++        )
++
++        model_transforms = ModelTransformFactory()(model_config)
++
++        return dataclasses.replace(
++            self.create_base_config(assets_dirs, model_config),
++            repack_transforms=repack_transform,
++            data_transforms=data_transforms,
++            model_transforms=model_transforms,
++            action_sequence_keys=self.action_sequence_keys,
++        )
++
++
+ @dataclasses.dataclass(frozen=True)
+ class LeRobotLiberoDataConfig(DataConfigFactory):
+     """
+@@ -761,6 +803,33 @@ _CONFIGS = [
+         pytorch_weight_path="/path/to/your/pytorch_weight_path",
+         num_train_steps=30_000,
+     ),
++    TrainConfig(
++        name="pi05_acwm_6tasks_0710_full_finetune",
++        model=pi0_config.Pi0Config(
++            pi05=True,
++            action_horizon=16,
++            pytorch_compile_mode=None,
++        ),
++        data=LeRobotACWMDataConfig(
++            repo_id="zsq/acwm_6tasks_0710_lerobot_v21_10hz",
++            base_config=DataConfig(prompt_from_task=True),
++        ),
++        weight_loader=weight_loaders.CheckpointWeightLoader(
++            "/data/zsq/openpi/checkpoints/pi05_acwm_full_finetune/27000/params"
++        ),
++        lr_schedule=_optimizer.CosineDecaySchedule(
++            warmup_steps=1_000,
++            peak_lr=5e-5,
++            decay_steps=1_000_000,
++            decay_lr=5e-5,
++        ),
++        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
++        ema_decay=0.999,
++        num_train_steps=30_000,
++        batch_size=256,
++        num_workers=8,
++        fsdp_devices=8,
++    ),
+     #
+     # Fine-tuning Aloha configs.
+     #
+diff --git a/src/openpi/training/data_loader.py b/src/openpi/training/data_loader.py
+index e2ee7dd..6d8e43a 100644
+--- a/src/openpi/training/data_loader.py
++++ b/src/openpi/training/data_loader.py
+@@ -127,6 +127,12 @@ class FakeDataset(Dataset):
+         return self._num_samples
+ 
+ 
++def _drop_lerobot_video_columns(dataset: lerobot_dataset.LeRobotDataset) -> None:
++    video_columns = [key for key in dataset.meta.video_keys if key in dataset.hf_dataset.column_names]
++    if video_columns:
++        dataset.hf_dataset = dataset.hf_dataset.remove_columns(video_columns)
++
++
+ def create_torch_dataset(
+     data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
+ ) -> Dataset:
+@@ -143,7 +149,9 @@ def create_torch_dataset(
+         delta_timestamps={
+             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
+         },
++        video_backend="pyav",
+     )
++    _drop_lerobot_video_columns(dataset)
+ 
+     if data_config.prompt_from_task:
+         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+diff --git a/src/openpi/transforms.py b/src/openpi/transforms.py
+index 272375e..ed785a8 100644
+--- a/src/openpi/transforms.py
++++ b/src/openpi/transforms.py
+@@ -191,6 +191,26 @@ class ResizeImages(DataTransformFn):
+         return data
+ 
+ 
++@dataclasses.dataclass(frozen=True)
++class DirectResizeImages(DataTransformFn):
++    height: int
++    width: int
++    method: jax.image.ResizeMethod = jax.image.ResizeMethod.LINEAR
++
++    def __call__(self, data: DataDict) -> DataDict:
++        def resize(image):
++            image = np.asarray(image)
++            resized = jax.image.resize(image, (self.height, self.width, image.shape[-1]), method=self.method)
++            if image.dtype == np.uint8:
++                return np.round(np.asarray(resized)).clip(0, 255).astype(np.uint8)
++            if np.issubdtype(image.dtype, np.floating):
++                return np.asarray(resized, dtype=image.dtype)
++            raise ValueError(f"Unsupported image dtype: {image.dtype}")
++
++        data["image"] = {k: resize(v) for k, v in data["image"].items()}
++        return data
++
++
+ @dataclasses.dataclass(frozen=True)
+ class SubsampleActions(DataTransformFn):
+     stride: int

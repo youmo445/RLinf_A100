@@ -238,7 +238,10 @@ def prepare_actions(
             )
         else:
             raise NotImplementedError(f"Env type {wm_env_type} not implemented")
-    elif env_type == SupportedEnvType.WANMULTIVIEWWM:
+    elif env_type in {
+        SupportedEnvType.WANMULTIVIEWWM,
+        SupportedEnvType.WOVRWM,
+    }:
         chunk_actions = raw_chunk_actions
 
     elif env_type == SupportedEnvType.MANISKILL:

@@ -1,0 +1,92 @@
+{
+  "diffsynth": {
+    "path": "/data/zsq/diffsynth-studio-wujie-ppu",
+    "head": "2d05394811e4d169658450d763f9b97babee5a1a",
+    "branch": "A100_0511",
+    "origin": "https://github.com/youmo445/diffsynth-studio-wujie-ppu.git",
+    "tracked_changes": [],
+    "patch": null,
+    "files": [
+      {
+        "path": "diffsynth/models/wan_video_vace_wan22_codex.py",
+        "bytes": 6220,
+        "sha256": "71c0a43307783be4b255707133af2cd0dfef708f9b45d6a50132d277452c55f8",
+        "tracked": true
+      },
+      {
+        "path": "diffsynth/pipelines/wan_video_new_wan22_codex.py",
+        "bytes": 8678,
+        "sha256": "2e69b4900f72c36ac0d6fa8842ecd367aa6eb24c985cd736c87e939613858d3a",
+        "tracked": true
+      },
+      {
+        "path": "diffsynth/trainers/arxx5_dataset4_wancontrolmultiview.py",
+        "bytes": 43127,
+        "sha256": "d6908d9291fde283a5d004cae73da42a38511f298bcd45c3a673eaeb54ac6826",
+        "tracked": true
+      },
+      {
+        "path": "diffsynth/trainers/arxx5_urdf_fk.py",
+        "bytes": 8798,
+        "sha256": "daaf612792efe4be1d00ae7efaaaae529e06044cba281926c2ff512ff1511198",
+        "tracked": true
+      },
+      {
+        "path": "diffsynth/models/reward_model.py",
+        "bytes": 4623,
+        "sha256": "be400d98f7d4074df976dac72cfcddb005bf1299be27737065940c0979f17161",
+        "tracked": true
+      }
+    ]
+  },
+  "openpi": {
+    "path": "/data/zsq/openpi",
+    "head": "15a9616a00943ada6c20a0f158e3adb39df2ccac",
+    "branch": "main",
+    "origin": "https://github.com/Physical-Intelligence/openpi.git",
+    "tracked_changes": [
+      "src/openpi/training/config.py",
+      "src/openpi/training/data_loader.py",
+      "src/openpi/transforms.py"
+    ],
+    "patch": "patches/openpi-working-tree.patch",
+    "files": [
+      {
+        "path": "src/openpi/training/config.py",
+        "bytes": 47049,
+        "sha256": "90d19448ab3a4a12168fca2290ce2a9108b527339f22831ea6bbf24adc3cb7af",
+        "tracked": true
+      },
+      {
+        "path": "src/openpi/training/data_loader.py",
+        "bytes": 20335,
+        "sha256": "7e91bc83c860713ab1f51bee2465655bf0efa2ee433f9916ec1caa0d88866fc9",
+        "tracked": true
+      },
+      {
+        "path": "src/openpi/transforms.py",
+        "bytes": 16566,
+        "sha256": "502773cc385052d0847a873a8d15499e4548c99b7679b35113ef1ed4e5ba8ee6",
+        "tracked": true
+      }
+    ]
+  },
+  "robotwin": {
+    "path": "/data/zsq/RoboTwin",
+    "head": "0008ae6800df9f75fc8de7098bacb01735fd8fd2",
+    "branch": "RLinf_support",
+    "origin": "https://github.com/RoboTwin-Platform/RoboTwin.git",
+    "tracked_changes": [
+      "envs/camera/camera.py"
+    ],
+    "patch": "patches/robotwin-working-tree.patch",
+    "files": [
+      {
+        "path": "envs/camera/camera.py",
+        "bytes": 25336,
+        "sha256": "69ba1e849279e4f204473b089d212071eeb3f2bf336fe91f905598c04cd2bae2",
+        "tracked": true
+      }
+    ]
+  }
+}

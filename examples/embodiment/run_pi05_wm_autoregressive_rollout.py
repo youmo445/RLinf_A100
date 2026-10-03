@@ -17,7 +17,7 @@ from omegaconf import OmegaConf, open_dict
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from rlinf.envs.world_model.world_model_wan_multi_view_env import WanmultiviewEnv
+from rlinf.envs import get_env_cls
 from rlinf.models import get_model
 
 
@@ -28,21 +28,21 @@ def parse_args():
     parser.add_argument(
         "--config-dir",
         type=Path,
-        default=Path("/data/zsq/RLinf/examples/embodiment/config"),
+        default=Path("/data/zsq/RLinf_A100/examples/embodiment/config"),
     )
     parser.add_argument(
         "--config-name",
         type=str,
-        default="wanmultiview_arxx5_grpo_pi05",
+        default="wanmultiview_arxx5_newstructure_new_cam_adjust_bottle_grpo_pi05.yaml",
         help="Hydra config name, with or without .yaml.",
     )
-    parser.add_argument("--episode-index", type=int, default=1)
-    parser.add_argument("--num-chunks", type=int, default=30)
+    parser.add_argument("--episode-index", type=int, default=10)
+    parser.add_argument("--num-chunks", type=int, default=60)
     parser.add_argument("--fps", type=int, default=15)
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("/data/zsq/RLinf/examples/embodiment/pi05_wm_rollouts_sft"),
+        default=Path("/data/zsq/RLinf_A100/examples/embodiment/pi05_singleview_wm_rollouts_sft"),
     )
     parser.add_argument(
         "--policy-model-path",
@@ -154,7 +154,10 @@ def parse_action14(text: str) -> np.ndarray:
     return np.asarray(vals, dtype=np.float32)
 
 
-def set_initial_action(env: WanmultiviewEnv, action14: np.ndarray):
+def set_initial_action(env, action14: np.ndarray):
+    if hasattr(env, "set_initial_action"):
+        env.set_initial_action(action14[None])
+        return
     action = torch.from_numpy(action14[None]).to(env.device, dtype=torch.float32)
     env.current_action14 = action
     if env.condition_action is not None and env.condition_action.shape[1] > 0:
@@ -287,7 +290,8 @@ def main():
     OmegaConf.save(cfg, out_dir / "resolved_config.yaml")
 
     env_cfg = cfg.env.train
-    env = WanmultiviewEnv(env_cfg, num_envs=1, seed_offset=0, total_num_processes=1)
+    env_cls = get_env_cls(env_cfg.env_type, env_cfg)
+    env = env_cls(env_cfg, num_envs=1, seed_offset=0, total_num_processes=1)
     obs, _ = env.reset(
         episode_indices=torch.tensor([args.episode_index], dtype=torch.long)
     )

@@ -1,0 +1,372 @@
+{
+  "source_host": "A100:60023",
+  "source_directory": "/data/zsq/RLinf_A100",
+  "source_head": "6ec98cffa53ae3498147081a239c91d8757b2eef",
+  "branch": "wmrl/multi-task-60023",
+  "copied_source_files": [
+    {
+      "path": "examples/embodiment/README_press_button_0806_wmrl_zh.md",
+      "bytes": 2419,
+      "sha256": "362ce042c7206f1cd44f2f9500e02dfa317a8514a90ed09b6b067321f98be4af"
+    },
+    {
+      "path": "examples/embodiment/build_arxx5_adjust_bottle_initial_states.py",
+      "bytes": 11656,
+      "sha256": "0d87a3edeec8c2d94b021a8a4326321240c808dba68d0be4bb0c83a6e8a886da"
+    },
+    {
+      "path": "examples/embodiment/build_arxx5_press_button_initial_states_0806.py",
+      "bytes": 12059,
+      "sha256": "04caaee311b76bd0f05233e9606444dc737d0aca3370b1066cb70387c46166c2"
+    },
+    {
+      "path": "examples/embodiment/config/ctrlworld_robotwin_dual_task_new_structure_grpo_pi05_collect.yaml",
+      "bytes": 11756,
+      "sha256": "ccaf92a03c8fcf04aebdff4bc21070e36e8f02e08d309a328d122cdba8558940"
+    },
+    {
+      "path": "examples/embodiment/config/env/robotwin_place_cans_plasticbox.yaml",
+      "bytes": 1640,
+      "sha256": "046bd9b39d5e0d3ccdd680ebbb3671e776754a6760a8ae8e895db3bdf9327a11"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_adjust_bottle_grpo_openpi_pi05.yaml",
+      "bytes": 5161,
+      "sha256": "c204df609c1a05a531d9d25119cafa478c5f3b449142a2f32e9333326c4820d2"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_adjust_bottle_ppo_openpi.yaml",
+      "bytes": 5080,
+      "sha256": "596960fdf93b6c48cf0fe658f5c850766a726ab32c42481ba3b46c00f615d909"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_adjust_bottle_ppo_openpi_eval.yaml",
+      "bytes": 5079,
+      "sha256": "4fe4699e8b00b25ff0843bd10fb588b663bfc05b5565581a78b8f6925fb6479b"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_adjust_bottle_ppo_openpi_pi05.yaml",
+      "bytes": 5169,
+      "sha256": "ed371a97cc9691573c5ddf896bfd7cdd8b0203ae9752fd704ffe3a5e7a25b06b"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_adjust_bottle_ppo_openpi_pi05_eval.yaml",
+      "bytes": 5135,
+      "sha256": "db037c1b88f13dc6022d16840d37b952fa49f989fbded625da8eaf7533e7f7fc"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_beat_block_hammer_grpo_openvlaoft.yaml",
+      "bytes": 4532,
+      "sha256": "26fedd542539c4dc830ea8ade815b8ea33ed27573025d9c23dd880762ee8a2b7"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_click_bell_grpo_lingbotvla.yaml",
+      "bytes": 4803,
+      "sha256": "6b024b992e3636f20cf5997c90fdef593188ae9b9e1ca472f2ac6847daca1c5d"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_click_bell_grpo_lingbotvla_eval.yaml",
+      "bytes": 4800,
+      "sha256": "cd877de63903b72e6c93567dec91973f1ea63602c102feb5e403f2d0cdc11a9d"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_grpo_openpi_pi05.yaml",
+      "bytes": 5446,
+      "sha256": "22745f5e9d898aa183c0c78583b1eab446d15a04c926f0af204b1bdffbfb0fb5"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_grpo_openpi_pi05_eval.yaml",
+      "bytes": 5494,
+      "sha256": "8a4bacada12dd62a3541be32c2cd116b80759748a74101f2e44da0a075547951"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_grpo_openpi_pi05_head_only_no_state.yaml",
+      "bytes": 5497,
+      "sha256": "9c82498dfbbb951b6948d243073b479732a4db66071d5efa8d466fcc733e34d5"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_grpo_openpi_pi05_head_only_no_state_eval.yaml",
+      "bytes": 5746,
+      "sha256": "0d14ab1cfc662d76d6118216885118e6fb1d47dd9ae9293364deb1bea81f08d6"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_grpo_openpi_pi05_jzn.yaml",
+      "bytes": 5476,
+      "sha256": "1a44177feac71dad6c146ea05906224ae6b7c4b55530922bf93032200820cb92"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_grpo_openpi_pi05_test_render.yaml",
+      "bytes": 5611,
+      "sha256": "9e6d346e810521780ca8a11637914336c27f2a3c805c0ab06a88bbf54b88958a"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_handover_block_grpo_openvlaoft.yaml",
+      "bytes": 4492,
+      "sha256": "485fce9005977cb0ab8102852eba6e34cc253d2a8446090be467e6c24cbb1fa0"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_lift_pot_grpo_openvlaoft.yaml",
+      "bytes": 4453,
+      "sha256": "238c38d8757f25da4df2c0764af8dd82ea18c57d7c512bf41850c5f5385e7856"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_move_can_pot_grpo_openvlaoft.yaml",
+      "bytes": 4477,
+      "sha256": "8e460c65c9e057997829d981673c19d187222b6877b58199e438fd9b0b8ba164"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_pick_dual_bottles_grpo_openvlaoft.yaml",
+      "bytes": 4475,
+      "sha256": "c6940472236d8cfb1ac6aa36d27d69985c8b7e940ef39b5a382e7c9f3df658a6"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_place_container_plate_grpo_openvlaoft.yaml",
+      "bytes": 4520,
+      "sha256": "7cc10d847e2c3fa56334b492f2da6ee4e247d706b1fc764d65c271ebb262ae2b"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_place_empty_cup_grpo_openvlaoft.yaml",
+      "bytes": 4485,
+      "sha256": "b1cab9462e0455edd31c5ddf3db99cb63088042aca0f1e11dd4b62d1770c1d4b"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_place_empty_cup_openpi_eval.yaml",
+      "bytes": 4605,
+      "sha256": "9d60fcf9da917fccf936a56523557f3412cd9a069cd855ad9ae6b738f6df8b7b"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_place_empty_cup_ppo_openvlaoft.yaml",
+      "bytes": 4614,
+      "sha256": "4c42a2272c56c4e545b1bcd93471359f3b10b895e5dd5e85602e7060e4814b56"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_place_empty_cup_ppo_openvlaoft_eval.yaml",
+      "bytes": 4613,
+      "sha256": "f9d5dac95d7514a6dc5ea091b5c4f3c387c49f413b6cc673eee2671cb5b9b3a5"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_place_shoe_grpo_lingbotvla.yaml",
+      "bytes": 4803,
+      "sha256": "6324e6005615ec607d179328077bbe5320ae0f2f3ceeb109729a067f6c84d2e5"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_place_shoe_grpo_lingbotvla_eval.yaml",
+      "bytes": 4802,
+      "sha256": "4bb033c30035aba7251dfc7fc19ed09e6b725cdd08a92f9ef5badfb3c1fd735f"
+    },
+    {
+      "path": "examples/embodiment/config/robotwin_ppo_openpi_pi05.yaml",
+      "bytes": 5471,
+      "sha256": "38756b645d5be375778401b6ca5ecce4dd5e59297a24dab1766894310f8b1b7f"
+    },
+    {
+      "path": "examples/embodiment/config/wanmultiview_arxx5_grpo_pi05.yaml",
+      "bytes": 9701,
+      "sha256": "6358d7dc8453c812cc3eb04c2c7fd4bb792afa03be44b515adab039bd275fed4"
+    },
+    {
+      "path": "examples/embodiment/config/wanmultiview_arxx5_grpo_pi05_testwm.yaml",
+      "bytes": 2902,
+      "sha256": "47fb9434b09ab12a356acbcd7920a27d0e1c3cd14bade562784870677a636392"
+    },
+    {
+      "path": "examples/embodiment/config/wanmultiview_arxx5_newstructure_new_cam_0719_grpo_pi05.yaml",
+      "bytes": 12812,
+      "sha256": "a2acfa74417ee5892e7a7af4ad5e0eca385ea8b6bb8dbd357458e32b015c3889"
+    },
+    {
+      "path": "examples/embodiment/config/wanmultiview_arxx5_newstructure_new_cam_adjust_bottle_grpo_pi05.yaml",
+      "bytes": 13290,
+      "sha256": "39a34be9cdcdeec556dedfa2df7a125e26eee63f740f506f33b71a948f7e4469"
+    },
+    {
+      "path": "examples/embodiment/config/wanmultiview_arxx5_newstructure_new_cam_grpo_pi05.yaml",
+      "bytes": 12104,
+      "sha256": "da8b7e9de30f909af3e022c9708a04542443d8b5303b1797e85a98f762917b56"
+    },
+    {
+      "path": "examples/embodiment/config/wanmultiview_arxx5_newstructure_new_cam_packphone_0809_whole_task_grpo_pi05.yaml",
+      "bytes": 12276,
+      "sha256": "5a123f91f61d12d8711b945170ff3b961a3fe1d2d9b2e3d9f5ec42f9ead3089a"
+    },
+    {
+      "path": "examples/embodiment/config/wanmultiview_arxx5_newstructure_new_cam_packphone_0809_whole_task_stage_reward_grpo_pi05.yaml",
+      "bytes": 13646,
+      "sha256": "3d66954421729af1398d3d8f4a1a245259edcf754da1d5a046aafcc5e8f7479d"
+    },
+    {
+      "path": "examples/embodiment/config/wanmultiview_arxx5_newstructure_new_cam_press_button_0806_grpo_pi05.yaml",
+      "bytes": 13221,
+      "sha256": "e90846da54fe87ca11f8d4ce2c846b099b485c8f71f844248c54c0f55f930edf"
+    },
+    {
+      "path": "examples/embodiment/config/wanmultiview_arxx5_newstructure_new_cam_task_specific_grpo_pi05.yaml",
+      "bytes": 14187,
+      "sha256": "954b004c45329405a22a7b0292b71e7961fa8380a8ce2b3f64ff473901c0ce06"
+    },
+    {
+      "path": "examples/embodiment/config/wanmultiview_arxx5_ppo_pi05.yaml",
+      "bytes": 9698,
+      "sha256": "292c54c5844cf17fba69b458e8f1a19dba555c331cc6eb200c7a34dbc2acd63d"
+    },
+    {
+      "path": "examples/embodiment/config/wanmultiview_robotwin_dual_task_new_structure_grpo_pi05.yaml",
+      "bytes": 10725,
+      "sha256": "c8e808e9dc0313b77a9f81499f73a8e313997923ffed2122dd494eeaa1b2a762"
+    },
+    {
+      "path": "examples/embodiment/config/wanmultiview_robotwin_dual_task_new_structure_grpo_pi05_head_only_no_state.yaml",
+      "bytes": 10775,
+      "sha256": "e564468178299d2eb169dd61390d725c554c120e9b46f58314886ca0cdf206ce"
+    },
+    {
+      "path": "examples/embodiment/config/wanmultiview_robotwin_dual_task_new_structure_grpo_pi05_head_only_no_state_tint_rm.yaml",
+      "bytes": 11431,
+      "sha256": "f512cbcc88477945a51348f500d8198581aae1b9cc6390d1517413f9c2ccebc9"
+    },
+    {
+      "path": "examples/embodiment/config/wanmultiview_robotwin_grpo_pi05.yaml",
+      "bytes": 10226,
+      "sha256": "b7ade7d46d0fa4f817fb50cd7d6b41c13c8ea842bccf16d394cd387b7232af18"
+    },
+    {
+      "path": "examples/embodiment/config/wanmultiview_robotwin_ppo_pi05.yaml",
+      "bytes": 9646,
+      "sha256": "e25ede0749689cbce1e261baa9e98384aff9cd1f91fdf01c67d5ce41eb0d749c"
+    },
+    {
+      "path": "examples/embodiment/config/wovr_robotwin_dual_task_grpo_pi05_head_only_no_state.yaml",
+      "bytes": 11127,
+      "sha256": "df8cc8e76add2f67831fc604f66c20e10637a304078827510ae8b0ad8e140396"
+    },
+    {
+      "path": "examples/embodiment/config/wovr_robotwin_dual_task_grpo_pi05_head_only_no_state_tint_rm.yaml",
+      "bytes": 11745,
+      "sha256": "6e523b3d98083597fb11fe85b5b7c039e0cad922754de3df3e7a913b5642122e"
+    },
+    {
+      "path": "examples/embodiment/config/wovr_three_view_arxx5_6tasks_task_specific_grpo_pi05.yaml",
+      "bytes": 14619,
+      "sha256": "ff660c5848972bc21b8c2b77dd7bf0a05ade4489172861b9dae8de71e65bd7d2"
+    },
+    {
+      "path": "examples/embodiment/config/wovr_three_view_robotwin_dual_task_grpo_pi05.yaml",
+      "bytes": 11035,
+      "sha256": "afeee9ddc3c0a1a504b3eadb672e8e9de45eccb085d385198608ed3ad5b00bf4"
+    },
+    {
+      "path": "examples/embodiment/run_embodiment.sh",
+      "bytes": 2587,
+      "sha256": "e48dae010388a789c62ebc73dfe068eb147cbf68e00a64f50b13c56de0a396b8"
+    },
+    {
+      "path": "examples/embodiment/run_packphone_fullstart_stage_reward_0to4.sh",
+      "bytes": 524,
+      "sha256": "be29088ac23e8073685d3fad1fe772cac01e162c9efcf3e32bd9c3f1d3d88f0b"
+    },
+    {
+      "path": "examples/embodiment/run_pi05_wm_autoregressive_rollout.py",
+      "bytes": 14869,
+      "sha256": "560fc7e0c2d5a7e3acfd60f8eee468aeba26d719c815ca3fef573f542cd9397a"
+    },
+    {
+      "path": "examples/embodiment/run_press_button_0806_wmrl.sh",
+      "bytes": 2060,
+      "sha256": "aeaec6a43a84e4857034a04525fb2e47722e0e53755823e0d30a73f3221a51bb"
+    },
+    {
+      "path": "examples/embodiment/run_wovr_embodiment.sh",
+      "bytes": 225,
+      "sha256": "7fadf26c06b5794302b634dbaa50ad1c794c5f6fa5a3ce9df35dbdacc64f1caa"
+    },
+    {
+      "path": "rlinf/envs/__init__.py",
+      "bytes": 5190,
+      "sha256": "1620dff3bede183e7571aef47a386eb20fb0d6d99356ac2d18667629d600e48c"
+    },
+    {
+      "path": "rlinf/envs/action_utils.py",
+      "bytes": 10624,
+      "sha256": "1b908c6463663bd5e1880a5dd56ca9ba891c2b80dbe01c29ea55522919792f2f"
+    },
+    {
+      "path": "rlinf/envs/robotwin/seeds/eval_seeds.json",
+      "bytes": 88521,
+      "sha256": "8694411131220db3a23cc1b7d030de793d79bd66a4e3f477afdd274401df633e"
+    },
+    {
+      "path": "rlinf/envs/robotwin/seeds/train_seeds.json",
+      "bytes": 313492,
+      "sha256": "af432f850df6e9dad27a08191241bf5eb456071079e60c45a14a6eb57f6e5d2d"
+    },
+    {
+      "path": "rlinf/envs/world_model/arxx5_action_map.py",
+      "bytes": 4844,
+      "sha256": "390b5d54fdee6c05d28996dd062b6260da68a665937613b80b6117a4cd4b9058"
+    },
+    {
+      "path": "rlinf/envs/world_model/reward_model_compat.py",
+      "bytes": 9011,
+      "sha256": "176204488a0e443a208e1b3921f1b9828e72517fb9fb1f82d4d7d8962aeebba1"
+    },
+    {
+      "path": "rlinf/envs/world_model/robotwin_gripper_tint.py",
+      "bytes": 14954,
+      "sha256": "7308c06b6ecac5d872e1e4ae511795880d110fdeb155dc3a13e421a42193a8b7"
+    },
+    {
+      "path": "rlinf/envs/world_model/world_model_ctrlworld_collect_env.py",
+      "bytes": 39021,
+      "sha256": "cdeaa4836380a38a06f9f17f2ff7a7121ba97f1fde78851eac2ffb847148c759"
+    },
+    {
+      "path": "rlinf/envs/world_model/world_model_wan_env.py",
+      "bytes": 33122,
+      "sha256": "49378776d2f8d50405f84d8aa7bdcdbfeab20a55167668657670f4131519280f"
+    },
+    {
+      "path": "rlinf/envs/world_model/world_model_wan_multi_view_env.py",
+      "bytes": 133023,
+      "sha256": "6b0acff18a24aaf94f1f591546bc1f2d5c1b8db55d8de8c33daaaa2e8863fd14"
+    },
+    {
+      "path": "rlinf/envs/world_model/world_model_wan_multi_view_stage_reward_env.py",
+      "bytes": 9495,
+      "sha256": "440a1ab68ce2342f7805b21bac22a07d0a04f3ee65ee433f43316f39a8d45e77"
+    },
+    {
+      "path": "rlinf/envs/world_model/world_model_wovr_env.py",
+      "bytes": 51429,
+      "sha256": "af32fd4ad38ac74c42c6c087069a9c9abd62c4e3d364f8dba9b9d844389cad12"
+    },
+    {
+      "path": "rlinf/models/embodiment/openpi/__init__.py",
+      "bytes": 5376,
+      "sha256": "ca066b1df1efe5339a8491479630bb7b30120eadc708764303d6d577c09363ab"
+    },
+    {
+      "path": "rlinf/models/embodiment/openpi/dataconfig/__init__.py",
+      "bytes": 24748,
+      "sha256": "10595c5e0bd600e2e3e191ab23e7d634a96451c0a53502874c300729a33ef5f4"
+    },
+    {
+      "path": "rlinf/models/embodiment/openpi/dataconfig/acwm_dataconfig.py",
+      "bytes": 3983,
+      "sha256": "a134aa6e9e4853918a04fe55811df30242bc8f141347356d853a4282fa620b24"
+    },
+    {
+      "path": "rlinf/models/embodiment/openpi/dataconfig/robotwin_aloha_dataconfig.py",
+      "bytes": 5151,
+      "sha256": "b0578c4ca867509216e15dfad967ba507bcf9d95813bdda21025b14e811a97d3"
+    },
+    {
+      "path": "rlinf/models/embodiment/openpi/openpi_action_model.py",
+      "bytes": 61481,
+      "sha256": "5e084341d6df76b98df1ae4f17ee89d7216e64a29a2d5786e9a34e70b53251a1"
+    }
+  ],
+  "excluded_tracked_modifications": [
+    "examples/sft/config/robotwin_sft_lingbotvla.yaml",
+    "rlinf/models/embodiment/lingbotvla/sft_builder.py"
+  ]
+}
